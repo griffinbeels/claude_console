@@ -398,8 +398,25 @@ them applies again the moment anyone considers pinning a host.
   of the one invariant 8 forbids.
 - **Deliberately untested:** that a real Claude session reads what is typed.
   That was verified by hand against a live session on 2026-07-25 and is what
-  produced invariant 8; automating it means spawning a window on the user's
-  desktop, which is exactly what invariant 1 forbids a *test* to do.
+  produced invariant 8. The reason it stays out of the suite is **cost, not
+  visibility** — every run would start a real session and wait out its boot.
+
+  **This entry used to give the wrong reason, and the correction is the useful
+  part.** It said automating it "means spawning a window on the user's desktop,
+  which is exactly what invariant 1 forbids a *test* to do" — and that is
+  false. `CREATE_NO_WINDOW` starts a **real Claude session with no window at
+  all**: `AttachConsole` reaches it, `_screen_text()` reads back what it is
+  drawing, and `WriteConsoleInput` types into it. Six of them were run that way
+  on 2026-07-26, including five at once, and nothing appeared on screen.
+
+  Everything in invariant 13 came out of those runs, and none of it was
+  reachable by reasoning — the placeholder in an "empty" box, the
+  `[Pasted text]` collapse, what Ctrl+U does to it, what a startup dialog does
+  to `is_ready`. **When a hand-off misbehaves and the log does not settle it,
+  this is the move**: spawn one windowless, drive the real functions, log to a
+  file (never stdout — attaching frees this process's own console), and kill it
+  afterwards. A measurement against a *mock* of the session's screen can only
+  agree with whatever you already believed.
 
 ## Parallel work
 

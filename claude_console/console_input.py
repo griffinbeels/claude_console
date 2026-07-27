@@ -616,8 +616,11 @@ def deliver(pid: int, commands: list[str], prompt: str) -> Delivery:
     result = Delivery(commands_submitted=submitted, commands_total=len(commands),
                       had_prompt=bool(prompt), prompt_typed=typed,
                       seconds=time.monotonic() - began)
+    # ASCII in the summary line on purpose: the screen dumps below it are full
+    # of box drawing and cannot be, but the line a person skims should survive
+    # a `Get-Content` at this machine's cp1252 console codepage.
     journal.record(
-        f"pid {pid}: {'delivered' if result.complete else 'INCOMPLETE'} — "
+        f"pid {pid}: {'delivered' if result.complete else 'INCOMPLETE'} - "
         f"commands {submitted}/{len(commands)}, "
         f"prompt {'typed' if typed else 'not typed' if prompt else 'none'}, "
         f"{result.seconds:.1f}s")
