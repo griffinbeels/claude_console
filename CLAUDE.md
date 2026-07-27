@@ -63,6 +63,15 @@ python tools/check_consumers.py     # the same check, by hand
   than a magic phrase because a PostToolUse edit has no command string to put a
   phrase in. Use it when the break is deliberate and the consumer is next on
   your list, and delete it when that lands.
+
+  **A multi-file refactor is the other legitimate use, and it is the common
+  one.** Removing a name takes several edits, and every state between the first
+  and the last fails to import — so the guard fires on each one and prints a
+  consumer traceback about a break that is thirty seconds old. Create the file
+  before starting, delete it before the final edit, then run
+  `python tools/check_consumers.py` by hand. Measured 2026-07-26: two blocked
+  edits mid-way through deleting the font and icon machinery, neither of which
+  said anything about the finished change.
 - `tests/test_consumer_check_hook.py` is the block/allow corpus — re-run it
   after any edit to the hook, including `test_the_hook_is_actually_wired_up`,
   which is the only thing that notices `settings.json` losing the registration.
