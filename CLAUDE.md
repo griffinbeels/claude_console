@@ -95,7 +95,7 @@ are exempt; they never reach a pipe. Pinned by
 | `session.py` | The spawn — `DEFAULT_LAUNCH`, the rebuilt environment, and `unfocused_startup` for the helpers this module does *not* open on a user's behalf |
 | `console_input.py` | Everything about typing into another process's console: bracketed paste, waiting for the prompt box, reading the screen back |
 | `environment.py` | The environment Windows gives a freshly launched process |
-| `text.py` | `safe_line` and `cap` — making a string safe to submit as a line |
+| `text.py` | `safe_line`, `safe_argument` and `cap` — making a string safe to *submit as a line* and safe to *interpolate into a launch*, which are two different jobs with two different parsers downstream (invariants 11 and 15) |
 | `journal.py` | The delivery log — where it lives, and that writing it can never break a hand-off |
 | `__main__.py` | The CLI, for consumers that are not Python |
 
@@ -312,6 +312,43 @@ the measurements are in the comments beside the code — do not compress them ou
     that brought its own argv — there is no safe way to inject a flag into
     someone else's command line. A consumer passes `name=` and builds neither.
 
+15. **A value on the launch crosses TWO parsers, and quoting only covers the
+    first.** `powershell_quote` is correct and was never the bug. PowerShell
+    then hands `claude` its arguments as a *second* command line, which the C
+    runtime parses again — and PowerShell 5.1 builds that one by wrapping the
+    value in double quotes and escaping nothing inside it. So an interior quote
+    closes the wrapper early and the next space outside a quoted run starts a
+    new argument. Measured 2026-07-27 by spawning the real `default_launch`
+    argv with an argv-dumping stand-in for `claude`:
+
+        'Bug: the bar''s own "Spin up" restores ticks'
+        -> ['-n', "Bug: the bar's own Spin", 'up restores ticks']
+
+    **The tail is not dropped — `claude [options] [command] [prompt]` takes a
+    positional prompt, and a positional prompt is submitted the instant the
+    session opens.** So a task title containing a quoted phrase opened a window
+    named `Bug: the bar's own Spin` with `up restores ticks` already sent as a
+    message nobody wrote. That is the whole reported symptom: the name is cut
+    off and the last word of the title becomes its own prompt. A trailing
+    backslash is the same defect from the other side — it escapes the closing
+    quote PowerShell appends, and `…backslash\` arrives as `…backslash"`.
+
+    `text.safe_argument` removes both rather than escaping them, and
+    `display_name` runs it so the `/rename` fallback inherits the same string.
+    Escaping correctly would mean reproducing the C runtime's rules *and*
+    predicting whether PowerShell wrapped this particular value — it only wraps
+    one containing whitespace — which is an undocumented internal that
+    PowerShell 7 changes again under `$PSNativeCommandArgumentPassing`. The
+    thing being protected is a 60-character tab label whose whitespace is
+    already collapsed.
+
+    **No assertion about the text of a command line can catch this**, which is
+    why it survived a suite that checks that string closely: the string was
+    right. `tests/test_launch_argv.py` spawns a real PowerShell and reads back
+    the argv `claude` is really handed, and it carries its own falsifier —
+    `test_powershell_really_does_split_an_unescaped_quote` asserts the hazard
+    still exists, so the guard cannot quietly become a test of nothing.
+
 ## What conhost cost, kept so nobody re-derives it
 
 The pin is gone (invariant 2) and so is everything built on it. This section is
@@ -366,14 +403,21 @@ them applies again the moment anyone considers pinning a host.
 ## Tests
 
 - **No test may put anything on screen.** The suite runs while someone is at the
-  keyboard. Exactly one test opens a real console — typing into another
-  process's console is OS behaviour, and a mock of it would only assert that the
-  mock was called — and that console is windowless (`CREATE_NO_WINDOW`, which is
-  still a *real* console: `AttachConsole`, `WriteConsoleInput` and the screen
-  buffer all work against it). `tests/test_conventions.py` fails the build if
-  anything else asks for `CREATE_NEW_CONSOLE` in any spelling. That guard lives
-  here rather than in a consumer precisely because it scans this repo's files: a
-  guard left behind when its code moves out still passes, and covers nothing.
+  keyboard. Two test files spawn a real process, and both are windowless
+  (`CREATE_NO_WINDOW`, which is still a *real* console: `AttachConsole`,
+  `WriteConsoleInput` and the screen buffer all work against it).
+  `tests/test_conventions.py` fails the build if anything asks for
+  `CREATE_NEW_CONSOLE` in any spelling. That guard lives here rather than in a
+  consumer precisely because it scans this repo's files: a guard left behind
+  when its code moves out still passes, and covers nothing.
+- **Both of those spawn for the same reason: the behaviour under test belongs
+  to something else.** `test_console_input.py` types into another process's
+  console, which is OS behaviour that a mock could only assert was called.
+  `test_launch_argv.py` reads back the argv PowerShell really hands a native
+  executable, which is the one thing no assertion about the *text* of a command
+  line can see — that string was correct for the whole of invariant 15's life.
+  It substitutes an argv dumper for `claude` and drops `-NoExit` (which would
+  never return), and nothing else: the quoting under test is the artifact's own.
 - **`_attached` frees the calling process's console in order to attach
   elsewhere** — and under pytest that is pytest's own. `test_console_input.py`'s
   autouse fixture refuses every attach by default; a test that wants one opts in

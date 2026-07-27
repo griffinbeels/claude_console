@@ -6,7 +6,7 @@ box. A consumer's data is always someone else's text.
 """
 
 from claude_console import console_input
-from claude_console.text import SESSION_NAME_LIMIT, cap, safe_line
+from claude_console.text import SESSION_NAME_LIMIT, cap, safe_argument, safe_line
 
 
 def test_a_newline_never_reaches_the_command_line():
@@ -73,3 +73,40 @@ def test_text_that_already_fits_is_returned_untouched():
 
 def test_the_default_limit_is_the_session_name_limit():
     assert len(cap("R" * 200)) == SESSION_NAME_LIMIT
+
+
+def test_a_double_quote_is_removed_before_it_can_split_an_argument():
+    """Measured: PowerShell wraps a native argument and escapes nothing inside.
+
+    So an interior quote closes that wrapper and the next space starts a new
+    argument — which `claude` reads as its positional prompt and submits. The
+    end-to-end proof is tests/test_launch_argv.py; this pins the rule itself.
+    """
+    assert safe_argument('the bar\'s own "Spin up" restores ticks') == (
+        "the bar's own Spin up restores ticks")
+
+
+def test_removing_a_quote_leaves_no_double_space_behind_it():
+    # Quotes come out before the whitespace collapse, not after, or every
+    # removed quote would leave the gap it was standing in.
+    assert safe_argument('a " b') == "a b"
+
+
+def test_a_trailing_backslash_is_removed_and_an_internal_one_is_kept():
+    # Only a trailing run is dangerous: it escapes the closing quote
+    # PowerShell appends. With every quote already gone, an internal
+    # backslash can never precede one.
+    assert safe_argument("ends in a backslash\\") == "ends in a backslash"
+    assert safe_argument(r"C:\repos\x") == r"C:\repos\x"
+    assert safe_argument("trailing then space \\ ") == "trailing then space"
+    # Two runs, taken in one pass — removing only the last would put the value
+    # back to ending in a backslash, which is the state being rejected.
+    assert safe_argument("two runs \\ \\") == "two runs"
+
+
+def test_safe_argument_does_everything_safe_line_does():
+    # It is safe_line plus two rules, never an alternative to it: a name still
+    # reaches a `/rename` line through display_name.
+    assert safe_argument("tasks\nrm -rf /") == "tasks rm -rf /"
+    assert safe_argument("\x1b[201~ done") == "[201~ done"
+    assert safe_argument("\x1b\x00\x7f") == ""

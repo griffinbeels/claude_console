@@ -48,7 +48,7 @@ from .session import (
     spawn_claude,
     unfocused_startup,
 )
-from .text import SESSION_NAME_LIMIT, cap, safe_line
+from .text import SESSION_NAME_LIMIT, cap, safe_argument, safe_line
 
 # `session.NEW_CONSOLE` is deliberately NOT re-exported here. Nothing outside
 # `spawn_claude` should be asking for a new console, and this package's own
@@ -64,7 +64,7 @@ __all__ = [
     "console_input", "environment", "journal",
     "spawn_claude", "session_pid", "unfocused_startup",
     "claude_environment", "login_environment",
-    "safe_line", "cap", "SESSION_NAME_LIMIT",
+    "safe_line", "safe_argument", "cap", "SESSION_NAME_LIMIT",
     "DEFAULT_LAUNCH", "default_launch", "display_name", "SW_SHOWNOACTIVATE",
 ]
 

@@ -166,6 +166,15 @@ because the tempting mistakes are all in this list:
    unescaped `ESC[201~` closes the bracketed paste early and hands the rest of
    the string to a session running with `--dangerously-skip-permissions` as a
    command. `cap()` is there for the 60-character tab-label limit.
+
+   **`safe_argument()` is its sibling, for a value going onto a command line
+   rather than into a prompt box** — and you only need it if you build your own
+   `launch`, since `name=` is cleaned for you. A launch crosses two parsers:
+   quoting satisfies PowerShell, and then PowerShell hands the executable a
+   second command line that the C runtime parses again. A double quote in the
+   value splits the argument there, and since `claude [options] [command]
+   [prompt]` takes a positional prompt — submitted the instant the session
+   opens — the tail arrives as a message nobody wrote.
 5. **A process that outlives delivery.** `deliver` uses a daemon thread, so a
    script that spawns a session and exits immediately types nothing. Use
    `deliver_now` if you are about to exit — `python -m claude_console` does.
@@ -202,8 +211,8 @@ names the cause. `CLAUDE_CONSOLE_LOG` moves it.
 Lower-level, all public: `spawn_claude`, `session_pid`, `default_launch`,
 `display_name`, `unfocused_startup` (for spawning something the user did *not*
 ask for — a window like that still may not activate), `claude_environment`,
-`login_environment`, `safe_line`, `cap`, and the `console_input`,
-`environment` and `journal` submodules.
+`login_environment`, `safe_line`, `safe_argument`, `cap`, and the
+`console_input`, `environment` and `journal` submodules.
 
 ## Tests
 

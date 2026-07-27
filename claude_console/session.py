@@ -13,7 +13,7 @@ import subprocess
 from pathlib import Path
 
 from . import environment
-from .text import cap, safe_line
+from .text import cap, safe_argument
 
 NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
@@ -73,8 +73,14 @@ def display_name(name: str) -> str:
     launch flag that carries it, and the `/rename` fallback for a caller that
     brought its own argv. Two spellings of "clean" would name the same session
     two different things depending on how it was started.
+
+    `safe_argument` rather than `safe_line`, because a name on the launch is
+    read by two parsers and not one — see its docstring for the measurement,
+    and `powershell_quote` for the hop it does not cover. The `/rename`
+    fallback inherits the stricter cleaning for free, which is the point of
+    both of them coming through here.
     """
-    return cap(safe_line(name))
+    return cap(safe_argument(name))
 
 
 def powershell_quote(value: str) -> str:
@@ -83,8 +89,16 @@ def powershell_quote(value: str) -> str:
     The launch is one PowerShell command line and the name in it is text a
     user typed — a task title, most of the time. Inside single quotes
     PowerShell treats every character literally except `'`, which is escaped
-    by doubling it; nothing else needs escaping and nothing else is escaped,
-    so a name reaches the session exactly as it was written.
+    by doubling it; nothing else needs escaping and nothing else is escaped.
+
+    **This covers PowerShell's parser and no other, which is the whole of what
+    it is for.** It used to say a quoted name "reaches the session exactly as
+    it was written", and that was the false half: PowerShell hands `claude` its
+    arguments as a second command line, which the C runtime parses again, and a
+    double quote inside this string splits the value there no matter how
+    correctly it is quoted here. `text.safe_argument` is what covers that hop,
+    and `display_name` runs it — so nothing arrives here still carrying one.
+    A future caller quoting a raw string it did not clean gets the old bug back.
 
     Quoting lives here rather than at the call site for the same reason
     `display_name` does: a caller that assembles the flag itself can get this
