@@ -541,6 +541,25 @@ def clear(pid: int, line: str) -> bool:
     the obvious guess and does nothing at all to a typed line; Ctrl+C clears
     it but exits the session on a second press, and this runs on a path where
     something has already gone wrong.
+
+    **KNOWN DEFECT, unfixed as of 2026-07-27: this returns True without having
+    cleared anything, in the one case it is called for.** The proof it uses is
+    the echo *leaving* `prompt_box` — which an echo that was never visible
+    there satisfies on the first poll. And "never visible" is exactly why
+    `submit` failed and called this: `delivery.log` 2026-07-27 06:14:44Z,
+    `command did not submit: '/color purple'` after 9.7s, which is `submit`'s
+    8s ECHO_TIMEOUT plus change. So the text may well still be in the box, and
+    `deliver` then pastes the prompt onto the end of it. `box_shows` needs only
+    the prompt's first ECHO_MATCH characters *somewhere* in the box, so
+    `/color purpleC:\\Users\\…` reports as delivered and `Delivery.complete`
+    stays quiet about it.
+
+    Fixing it means proving the *absence* of the line rather than the absence
+    of its echo — read the box before writing Ctrl+U, and treat "the box held
+    something we did not put there" as its own outcome. Why `prompt_box` could
+    not see `/color purple` in the first place is unproven; the standing
+    suspicion is Claude Code's slash-command popup changing what the prompt row
+    looks like, and the way to settle it is a real session, not a mock.
     """
     if not _write(pid, CLEAR_LINE):
         return False

@@ -16,9 +16,14 @@ uv pip install --python ".venv\Scripts\python.exe" -e . pytest
 & ".venv\Scripts\python.exe" -m pytest tests/ -q     # 107 tests
 ```
 
-- **PowerShell, not Bash.** The Bash tool on this machine cannot resolve
-  `.venv\Scripts\python.exe`. PowerShell 5.1 has no `&&`/`||` — chain with `;`
-  or `if ($?) { }`.
+- **PowerShell, not Bash — but the reason is narrower than it reads.** What
+  Bash cannot resolve is the *relative backslash* form `.venv\Scripts\python.exe`,
+  where `\S` and `\p` are escapes. An **absolute forward-slash** path works
+  there: `"C:/Users/griff/Desktop/code/claude-console/.venv/Scripts/python.exe"
+  -m pytest tests/ -q` ran green with `exit=0` (2026-07-27). Worth knowing
+  because PowerShell mangles a native command's exit code, so a pass/fail that
+  something else reads — a wrap step, a hook — is more honest out of Bash.
+  PowerShell 5.1 also has no `&&`/`||` — chain with `;` or `if ($?) { }`.
 - **Windows only, and stated rather than implied.** `ctypes.WinDLL`,
   console input buffers and `CreateEnvironmentBlock` are the substance here; the
   package raises on import anywhere else. Nothing pretends to be portable.
