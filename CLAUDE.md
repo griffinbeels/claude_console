@@ -13,7 +13,7 @@ This file is for someone **changing** the module. Read both before editing.
 ```powershell
 uv venv --python 3.12 .venv
 uv pip install --python ".venv\Scripts\python.exe" -e . pytest
-& ".venv\Scripts\python.exe" -m pytest tests/ -q     # 79 tests
+& ".venv\Scripts\python.exe" -m pytest tests/ -q     # 107 tests
 ```
 
 - **PowerShell, not Bash.** The Bash tool on this machine cannot resolve
