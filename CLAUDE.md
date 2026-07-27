@@ -13,7 +13,7 @@ This file is for someone **changing** the module. Read both before editing.
 ```powershell
 uv venv --python 3.12 .venv
 uv pip install --python ".venv\Scripts\python.exe" -e . pytest
-& ".venv\Scripts\python.exe" -m pytest tests/ -q     # 107 tests
+& ".venv\Scripts\python.exe" -m pytest tests/ -q     # 109 tests
 ```
 
 - **PowerShell, not Bash — but the reason is narrower than it reads.** What
@@ -307,6 +307,39 @@ the measurements are in the comments beside the code — do not compress them ou
     dialog is up — measured, the workspace-trust question keeps `is_ready`
     False until a person answers it — so 45 s was a deadline after which the
     prompt was dropped for good.
+
+    **A command is written again too, as of 2026-07-27, and that it was not is
+    the lesson.** This entry hardened the prompt and left `submit` writing once
+    and giving up — the same eaten-write failure, in the half nobody had
+    measured, which is what "the colour effect sometimes doesn't trigger" was.
+    `delivery.log` 06:14:44Z: `command did not submit: '/color purple'` after
+    9.7 s, which is `ECHO_TIMEOUT` plus the wait for a prompt box.
+    `_write_until_shown` is now the retry both callers reach, so there is one
+    implementation with one named difference: `COMMAND_ATTEMPTS` is 2 against
+    `PASTE_ATTEMPTS`' 3, because the prompt is the payload and a command is
+    decoration on it.
+
+    **Why a retry rather than a longer or smarter wait**, measured against a
+    real windowless session (2026-07-27):
+
+        is_ready after 1.6s -> True
+        prompt_box() -> 'Try "write a test for <filepath>"'
+        ...two seconds later...
+        prompt_box() -> ''
+
+    `is_ready` goes true while the box still holds its startup placeholder and
+    the layout is still moving, so writing the instant it fires races a session
+    that is not reading yet. No constant fixes that — the session is ready when
+    it is ready.
+
+    That same dump killed a plausible theory worth recording, because it is the
+    one a reader will re-invent: **the slash-command popup does not break the
+    read.** `prompt_box` handles the real layout correctly — the row is
+    `'>\xa0/color purple'`, the separator a non-breaking space that `strip()`
+    removes — and against a settled session the command appears within 0.25 s
+    and Enter clears it within another 0.25 s. So a command `submit` cannot see
+    is most likely one the session never took, which also means there is
+    usually nothing left in the box for the prompt to be pasted on top of.
 
 14. **A name rides on the launch, never on the keyboard.** `claude -n <name>`
     is applied by the process drawing the window, before this module types a
