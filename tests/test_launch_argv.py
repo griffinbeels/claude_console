@@ -106,9 +106,9 @@ def test_a_trailing_backslash_cannot_escape_the_quote_powershell_adds(dumper):
 def test_an_apostrophe_still_survives_the_whole_round_trip(dumper):
     # The hop `powershell_quote` does cover, asserted here too so that a change
     # to either one cannot quietly break the other.
-    argv = launched_argv("Griff's tasks", dumper)
+    argv = launched_argv("Friday's tasks", dumper)
 
-    assert argv == ["--dangerously-skip-permissions", "-n", "Griff's tasks"]
+    assert argv == ["--dangerously-skip-permissions", "-n", "Friday's tasks"]
 
 
 def test_powershell_really_does_split_an_unescaped_quote(dumper):

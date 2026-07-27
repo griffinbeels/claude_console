@@ -10,12 +10,17 @@
     "runs it whenever anything under claude_console/ is edited. Adding a project",
     "is one entry here -- no code change, and the hook picks it up immediately.",
     "",
-    "python is relative to path; verify is argv passed to that interpreter."
+    "python is relative to path; verify is argv passed to that interpreter.",
+    "",
+    "path is relative to THIS repo, so no home directory is published -- this",
+    "repo is public. Consumers are expected to sit beside it. An absolute path",
+    "still works if one has to be used; a missing checkout is skipped, never",
+    "failed, so a machine that has not cloned a consumer is not a broken one."
   ],
   "consumers": [
     {
       "name": "task_tracker",
-      "path": "C:/Users/griff/Desktop/code/task_tracker",
+      "path": "../task_tracker",
       "python": ".venv/Scripts/python.exe",
       "verify": ["-m", "pytest", "tests/", "-q"]
     }

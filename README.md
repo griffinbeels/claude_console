@@ -59,11 +59,11 @@ writes, and giving up quietly. Read its module docstring before changing it.
 
 ## Where it lives, and why
 
-**One copy, at `C:\Users\griff\Desktop\code\claude-console`, installed editable
-into each consumer.** Not vendored, not junctioned, not copied.
+**One copy on the machine, installed editable into each consumer.** Not
+vendored, not junctioned, not copied.
 
 ```powershell
-uv pip install --python "<consumer venv>\Scripts\python.exe" -e C:/Users/griff/Desktop/code/claude-console
+uv pip install --python "<consumer venv>\Scripts\python.exe" -e <this checkout>
 ```
 
 An editable install writes a `.pth` and a path finder into the consumer's
@@ -105,17 +105,29 @@ setup command installs it:
 
 ```toml
 dependencies = ["claude-console"]
-
-[tool.uv.sources]
-claude-console = { path = "C:/Users/griff/Desktop/code/claude-console", editable = true }
 ```
 
-Then `uv pip install --python ".venv\Scripts\python.exe" -e .` — which `uv`
-resolves through `[tool.uv.sources]`, verified.
+Then name this checkout on the setup command, alongside the consumer's own
+editable install:
 
-**Absolute path, deliberately.** A relative one cannot serve both a repo root
-and a git worktree under it: task_tracker's worktrees sit four levels deeper
-than its main checkout, and the same `pyproject.toml` is checked out into both.
+```powershell
+uv pip install --python ".venv\Scripts\python.exe" -e <this checkout> -e .
+```
+
+**No `[tool.uv.sources]` entry, and that is deliberate** — every form it can
+take is wrong for a consumer whose repository is public. An absolute path
+publishes one machine's home directory and nobody else can install the project.
+A relative one cannot serve both a repo root and a git worktree under it:
+task_tracker's worktrees sit four levels deeper than its main checkout, and the
+same `pyproject.toml` is checked out into both. A git URL installs a *copy* and
+silently ends the live-edit property this whole layout exists for.
+
+Supplying it on the command line has none of those problems, and was measured
+against the entry it replaces: `uv` resolves the dependency from the editable
+already being installed rather than reaching for an index, `claude_console`
+resolves into this source tree, and the consumer's suite passes against a venv
+built that way. Consumers keep their own literal path somewhere untracked —
+task_tracker uses `CLAUDE.local.md`.
 
 ### For a consumer that shells out to Python from Node
 
@@ -124,7 +136,7 @@ that it works under a bare system Python with no venv. Install it once into
 whichever interpreter your tooling finds:
 
 ```powershell
-uv pip install --python C:\Python314\python.exe -e C:/Users/griff/Desktop/code/claude-console
+uv pip install --python C:\Python314\python.exe -e <this checkout>
 ```
 
 Then you need no Python file of your own:

@@ -8,7 +8,7 @@
             "type": "command",
             "command": "python",
             "args": [
-              "C:\\Users\\griff\\Desktop\\code\\claude-console\\.claude\\hooks\\consumer_check.py"
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/consumer_check.py"
             ],
             "timeout": 300
           }

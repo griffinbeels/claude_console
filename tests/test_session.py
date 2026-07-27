@@ -215,9 +215,9 @@ def test_an_apostrophe_in_a_name_cannot_break_out_of_its_quotes():
     # A session name is a task title — user text, going into a PowerShell
     # command line. Inside single quotes only `'` is special, and doubling it
     # is how PowerShell escapes it.
-    assert session.powershell_quote("Griff's tasks") == "'Griff''s tasks'"
-    assert session.default_launch("Griff's tasks")[-1].endswith(
-        "-n 'Griff''s tasks'")
+    assert session.powershell_quote("Friday's tasks") == "'Friday''s tasks'"
+    assert session.default_launch("Friday's tasks")[-1].endswith(
+        "-n 'Friday''s tasks'")
 
 
 def test_a_newline_in_a_name_cannot_become_a_second_command():

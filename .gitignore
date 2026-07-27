@@ -4,3 +4,9 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 tests/_console_probe_log.txt
+
+# Design specs and implementation plans. Kept on disk as the record of why
+# things are the way they are, but not published: they are working notes that
+# quote conversations and name other checkouts on this machine. CLAUDE.md,
+# .claude/rules/ and README.md are the current documentation.
+docs/superpowers/

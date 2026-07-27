@@ -68,7 +68,7 @@ def edit_of(path):
     pytest.param(edit_of(str(REPO / "consumers.json")), id="edits-the-registry"),
     pytest.param(edit_of(str(REPO / ".claude" / "hooks" / "consumer_check.py")),
                  id="edits-the-hook-itself"),
-    pytest.param(edit_of(r"C:\Users\griff\Desktop\code\task_tracker\launcher.py"),
+    pytest.param(edit_of(r"C:\elsewhere\another_project\launcher.py"),
                  id="edits-a-different-repo"),
     pytest.param({"tool_name": "Edit", "tool_input": {}}, id="no-file-path"),
     pytest.param({"tool_name": "Edit", "tool_input": "nonsense"},

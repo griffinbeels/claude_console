@@ -33,7 +33,10 @@ def consumers() -> list[dict]:
 
 def run_one(consumer: dict) -> tuple[str, str]:
     """(status, detail) for one consumer — "pass", "fail" or "skip"."""
-    root = Path(consumer["path"])
+    # Relative to this repo, so the registry carries no home directory — this is
+    # a public repo. `Path / absolute` returns the absolute one, so an entry
+    # that still spells a full path keeps working.
+    root = (REPO / consumer["path"]).resolve()
     interpreter = root / consumer["python"]
     if not root.is_dir():
         return "skip", f"no checkout at {root}"
