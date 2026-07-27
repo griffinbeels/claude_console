@@ -94,6 +94,14 @@ ECHO_POLL = 0.1
 # to being eaten is to feed it again.
 PASTE_ATTEMPTS = 3
 
+# The same, for a command — and fewer, because a command is decoration while
+# the prompt is the payload. Every extra attempt puts another ECHO_TIMEOUT
+# between the window opening and the tasks arriving in it, and `deliver`
+# abandons the remaining commands but pastes the prompt regardless. Two buys
+# the retry that matters (see `_write_until_shown`) at 8 s of worst case
+# instead of 16.
+COMMAND_ATTEMPTS = 2
+
 # What the box shows instead of the text when a paste is long enough:
 # "[Pasted text #1 +29 lines]" (measured 2026-07-26 with a 30-line prompt; a
 # 3-line one still showed its first line). The number climbs with each paste
@@ -433,6 +441,69 @@ def _record_screen(pid: int, label: str) -> None:
                    + "\n".join("    | " + row for row in rows))
 
 
+def _write_until_shown(pid: int, text: str, shown, attempts: int,
+                       what: str) -> bool:
+    """Write `text` as a bracketed paste until the session's box shows it.
+
+    The shared half of `paste` and `submit`, and it is shared because the
+    failure it answers belongs to neither of them: **a session that is still
+    starting takes a write into its console input buffer and never draws it.**
+    `_write_bracketed` returns True — the records really did land — so nothing
+    but reading the box back can tell that apart from a hand-off that worked.
+
+    This was hardened for the prompt on 2026-07-26 and left unhardened for
+    commands, which is the whole of "the colour effect sometimes doesn't
+    trigger": one write, one 8 s wait, give up. `delivery.log` 2026-07-27
+    06:14:44Z is that shape — `command did not submit: '/color purple'` after
+    9.7 s, which is `submit`'s ECHO_TIMEOUT plus the wait for a prompt box.
+
+    Measured against a real, windowless session (2026-07-27) — and the reason
+    a retry is the right answer rather than a longer wait:
+
+        is_ready after 1.6s -> True
+        prompt_box() -> 'Try "write a test for <filepath>"'   <- placeholder
+        ...two seconds later...
+        prompt_box() -> ''
+
+    `is_ready` goes true while the box still holds its startup placeholder and
+    the layout is still changing. There is no constant that fixes that — the
+    session is ready when it is ready — so the writer's move is to notice it
+    was not read and feed it again. When the same session was written to after
+    it had settled, the command appeared in the box within 0.25 s and Enter
+    cleared it within another 0.25 s.
+
+    Two measurements make the retry safe, and it is unsafe without them:
+
+    * **Ctrl+U takes a paste back out**, a collapsed `[Pasted text #1 …]`
+      block as well as a typed line. So an attempt that may have half-landed
+      can be undone before the next one.
+    * **Two pastes with nothing between them concatenate** — measured, the box
+      read `…hand-offBUG: a single line hand-off`. So a retry that does not
+      clear first turns one lost write into one mangled one, which is worse.
+
+    The last attempt is deliberately *not* cleared. If the confirmation is
+    wrong rather than the write — a layout `prompt_box` cannot read — then the
+    text is sitting in the box unseen, and clearing it on the way out would
+    turn a delivery that actually worked into an empty box. Clearing between
+    attempts prevents doubling; not clearing after the last one keeps the
+    failure no worse than it used to be. A caller that needs the box empty
+    after a failure says so itself: `deliver` calls `clear`.
+    """
+    for attempt in range(1, attempts + 1):
+        wrote = _write_bracketed(pid, text)
+        if wrote and _wait(pid, shown, ECHO_TIMEOUT, ECHO_POLL):
+            if attempt > 1:
+                journal.record(f"pid {pid}: {what} landed on attempt {attempt}")
+            return True
+        journal.record(f"pid {pid}: {what} attempt {attempt}/{attempts} did not "
+                       f"reach the box (write={'ok' if wrote else 'failed'})")
+        if attempt == attempts:
+            return False
+        # Whatever did arrive has to come out before writing it again.
+        _write(pid, CLEAR_LINE)
+    return False
+
+
 def paste(pid: int, text: str, timeout: float = READY_TIMEOUT,
           attempts: int = PASTE_ATTEMPTS) -> bool:
     """Type `text` into the process's prompt box, and prove that it arrived.
@@ -445,21 +516,9 @@ def paste(pid: int, text: str, timeout: float = READY_TIMEOUT,
     "sometimes the prompt gets eaten" stayed a mystery long enough to be
     reported as a feeling about slow windows.
 
-    Two measurements make the retry safe, and it is unsafe without them:
-
-    * **Ctrl+U takes a paste back out**, a collapsed `[Pasted text #1 …]`
-      block as well as a typed line. So an attempt that may have half-landed
-      can be undone before the next one.
-    * **Two pastes with nothing between them concatenate** — measured, the box
-      read `…hand-offBUG: a single line hand-off`. So a retry that does not
-      clear first turns one lost prompt into one mangled one, which is worse.
-
-    The last attempt is deliberately *not* cleared. If the confirmation is
-    wrong rather than the write — a layout `prompt_box` cannot read — then the
-    text is sitting in the box unseen, and clearing it on the way out would
-    turn a hand-off that actually worked into an empty box. Clearing between
-    attempts prevents doubling; not clearing after the last one keeps the
-    failure no worse than it used to be.
+    The retry itself, and the measurements that make it safe, are
+    `_write_until_shown` — which `submit` now shares, because a command was
+    losable exactly the same way and only the prompt had been hardened.
     """
     if not text:
         return False
@@ -468,24 +527,15 @@ def paste(pid: int, text: str, timeout: float = READY_TIMEOUT,
                        f"after {timeout:.0f}s")
         _record_screen(pid, "screen when the wait for a prompt box ran out")
         return False
-    for attempt in range(1, attempts + 1):
-        wrote = _write_bracketed(pid, text)
-        if wrote and _wait(pid, lambda screen: box_shows(screen, text),
-                           ECHO_TIMEOUT, ECHO_POLL):
-            if attempt > 1:
-                journal.record(f"pid {pid}: prompt landed on attempt {attempt}")
-            return True
-        journal.record(f"pid {pid}: prompt attempt {attempt}/{attempts} did not "
-                       f"reach the box (write={'ok' if wrote else 'failed'})")
-        if attempt == attempts:
-            break
-        # Whatever did arrive has to come out before writing it again.
-        _write(pid, CLEAR_LINE)
+    if _write_until_shown(pid, text, lambda screen: box_shows(screen, text),
+                          attempts, "prompt"):
+        return True
     _record_screen(pid, "screen after the last prompt attempt")
     return False
 
 
-def submit(pid: int, line: str, timeout: float = COMMAND_TIMEOUT) -> bool:
+def submit(pid: int, line: str, timeout: float = COMMAND_TIMEOUT,
+           attempts: int = COMMAND_ATTEMPTS) -> bool:
     """Type `line` into the process's prompt box and press Enter for it.
 
     Bracketed for the same reason `paste` is bracketed, but for the opposite
@@ -512,16 +562,25 @@ def submit(pid: int, line: str, timeout: float = COMMAND_TIMEOUT) -> bool:
     pressing Enter would send a blank prompt to the session. `setup_commands`
     never produces one, but this and `paste` are read as a pair and refuse an
     empty argument the same way.
+
+    **And they are a pair in the retry too, which they were not until
+    2026-07-27.** A command written into a session that has not started
+    reading is dropped exactly as a prompt is, and this gave up after one
+    attempt while `paste` tried three — so "the colour effect sometimes
+    doesn't trigger" was the already-diagnosed defect surviving in the half
+    nobody had measured. See `_write_until_shown`. `COMMAND_ATTEMPTS` is
+    smaller than `PASTE_ATTEMPTS` because the prompt is the payload and a
+    command is decoration on it.
     """
     if not line:
         return False
     if not _wait(pid, is_ready, timeout):
         return False
-    if not _write_bracketed(pid, line):
-        return False
     echo = line[:ECHO_MATCH]
-    if not _wait(pid, lambda screen: echo in prompt_box(screen),
-                 ECHO_TIMEOUT, ECHO_POLL):
+    if not _write_until_shown(pid, line,
+                              lambda screen: echo in prompt_box(screen),
+                              attempts, f"command {line!r}"):
+        _record_screen(pid, f"screen after the last attempt at {line!r}")
         return False
     if not _write(pid, "\r"):
         return False
@@ -542,24 +601,25 @@ def clear(pid: int, line: str) -> bool:
     it but exits the session on a second press, and this runs on a path where
     something has already gone wrong.
 
-    **KNOWN DEFECT, unfixed as of 2026-07-27: this returns True without having
-    cleared anything, in the one case it is called for.** The proof it uses is
-    the echo *leaving* `prompt_box` — which an echo that was never visible
-    there satisfies on the first poll. And "never visible" is exactly why
-    `submit` failed and called this: `delivery.log` 2026-07-27 06:14:44Z,
-    `command did not submit: '/color purple'` after 9.7s, which is `submit`'s
-    8s ECHO_TIMEOUT plus change. So the text may well still be in the box, and
-    `deliver` then pastes the prompt onto the end of it. `box_shows` needs only
-    the prompt's first ECHO_MATCH characters *somewhere* in the box, so
-    `/color purpleC:\\Users\\…` reports as delivered and `Delivery.complete`
-    stays quiet about it.
+    **Its success is weak evidence, and that is a known limit rather than a
+    bug.** The proof it uses is the echo *leaving* `prompt_box`, which an echo
+    that was never visible there satisfies on the first poll — so "cleared"
+    and "there was nothing to clear" are the same answer.
 
-    Fixing it means proving the *absence* of the line rather than the absence
-    of its echo — read the box before writing Ctrl+U, and treat "the box held
-    something we did not put there" as its own outcome. Why `prompt_box` could
-    not see `/color purple` in the first place is unproven; the standing
-    suspicion is Claude Code's slash-command popup changing what the prompt row
-    looks like, and the way to settle it is a real session, not a mock.
+    That was written up as a likely glue-the-prompt-onto-a-leftover-command
+    defect on 2026-07-27, and instrumenting a real windowless session the same
+    day argued against it: `prompt_box` reads the real layout correctly
+    (`'>\\xa0/color purple'` → `'/color purple'`, with the separator a
+    non-breaking space that `strip()` removes), the command appears within
+    0.25 s, and Enter clears it within another 0.25 s. So a command `submit`
+    could not see is most likely a command the session never took — the
+    startup drop `_write_until_shown` now retries — and there is then nothing
+    in the box for the prompt to land on top of.
+
+    What is genuinely unproven is the *other* branch: a box holding text this
+    module did not put there. Ctrl+U is written unconditionally, so that case
+    is handled by luck rather than by design. Settling it needs a session that
+    reproduces the failure, and this one would not.
     """
     if not _write(pid, CLEAR_LINE):
         return False

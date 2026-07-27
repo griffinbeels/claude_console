@@ -392,8 +392,51 @@ def test_the_enter_waits_for_the_line_to_reach_the_prompt_box(monkeypatch):
     session = live_session(monkeypatch, reads_input=False)
 
     assert console_input.submit(7, "/color red") is False
+    # No Enter, ever — that is the whole assertion. The line is written
+    # COMMAND_ATTEMPTS times with a Ctrl+U between, because a session that
+    # never shows the text is indistinguishable from one that dropped it.
+    assert "\r" not in session.writes
     assert session.writes == [
-        console_input.PASTE_START + "/color red" + console_input.PASTE_END]
+        console_input.PASTE_START + "/color red" + console_input.PASTE_END,
+        console_input.CLEAR_LINE,
+        console_input.PASTE_START + "/color red" + console_input.PASTE_END,
+    ]
+
+
+def test_a_command_the_session_ate_is_written_again(monkeypatch):
+    """The reported failure: "/color sometimes doesn't take".
+
+    `delivery.log` 2026-07-27 06:14:44Z — `command did not submit:
+    '/color purple'` after 9.7 s, which is submit's ECHO_TIMEOUT plus the wait
+    for a prompt box. The write succeeded and the console buffer took it; the
+    session, still starting, never drew it. Measured against a real windowless
+    session the same day: `is_ready` goes true at 1.6 s while the box still
+    holds its startup placeholder, so writing the instant it fires races a
+    session that is not reading yet.
+
+    `paste` was hardened against exactly this on 2026-07-26 and `submit` was
+    not, which is why the prompt stopped getting eaten and the colour did not.
+    """
+    session = live_session(monkeypatch, eats_pastes=1)
+
+    assert console_input.submit(7, "/color red") is True
+    assert session.writes == [
+        console_input.PASTE_START + "/color red" + console_input.PASTE_END,
+        console_input.CLEAR_LINE,
+        console_input.PASTE_START + "/color red" + console_input.PASTE_END,
+        "\r",
+    ]
+
+
+def test_a_command_retry_clears_first_so_two_writes_cannot_concatenate(monkeypatch):
+    # Measured on a live session: two pastes with nothing between them
+    # concatenate. Without the Ctrl+U a retry turns one lost command into one
+    # mangled one, which is worse than the failure it is fixing.
+    session = live_session(monkeypatch, eats_pastes=1)
+    console_input.submit(7, "/color red")
+
+    assert session.writes[1] == console_input.CLEAR_LINE
+    assert session.box == ""
 
 
 def test_a_command_is_never_typed_on_top_of_one_still_in_the_box(monkeypatch):
