@@ -1,0 +1,19 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": [
+              "C:\\Users\\griff\\Desktop\\code\\claude-console\\.claude\\hooks\\consumer_check.py"
+            ],
+            "timeout": 300
+          }
+        ]
+      }
+    ]
+  }
+}

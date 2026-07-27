@@ -31,20 +31,52 @@ uv pip install --python ".venv\Scripts\python.exe" -e . pytest
   without `--help` from a verification pass: it opens a real Claude window on
   the user's desktop.
 
-## Changing this breaks other repos immediately
+## Changing this breaks other repos immediately — and a hook says so
 
 There is no version to pin. Consumers install **editable**, so `site-packages`
 holds a `.pth` and a path finder pointing at this tree — not a copy. An edit
 here, including a brand-new file, is live in the next process everywhere. That
-is deliberate and it is what was asked for; the cost is that this repo's suite
-being green is only half the check.
+is deliberate and it is what was asked for. The cost runs the other way: this
+repo's suite cannot catch a break, because it tests this module against itself.
 
-| Consumer | Uses | Verify with |
+**That check is automatic, not remembered.** `consumers.json` lists every
+project that imports this package; `tools/check_consumers.py` runs each one's
+suite; and `.claude/hooks/consumer_check.py` (PostToolUse, wired in
+`.claude/settings.json`) fires it whenever anything under `claude_console/`
+is written. A consumer that goes red **blocks with exit 2**, putting the failing
+output in front of whoever made the edit, in the same turn.
+
+```powershell
+python tools/check_consumers.py     # the same check, by hand
+```
+
+- **Adding a project is one entry in `consumers.json`.** No code change; the
+  hook picks it up on the next edit. That is the whole answer to "how do I stop
+  another project quietly missing out".
+- **Scope is only `claude_console/`.** Editing a test, the README or the hook
+  itself changes nothing a consumer imports, and paying five seconds for that
+  would train everyone to switch the guard off.
+- **It fails open, deliberately** — a missing checkout, an absent venv, a wedged
+  run. A consumer nobody has cloned is not a broken machine, and a guard that
+  cries wolf is a guard that gets disabled within a day.
+- **Escape hatch:** create `.claude/skip-consumer-check`. It is a file rather
+  than a magic phrase because a PostToolUse edit has no command string to put a
+  phrase in. Use it when the break is deliberate and the consumer is next on
+  your list, and delete it when that lands.
+- `tests/test_consumer_check_hook.py` is the block/allow corpus — re-run it
+  after any edit to the hook, including `test_the_hook_is_actually_wired_up`,
+  which is the only thing that notices `settings.json` losing the registration.
+
+**Everything the guard prints must be ASCII.** Python writes stderr in the
+system codepage (cp1252 here), so an em dash arrives as `?` — measured, in a
+live run of this hook, in the very text meant to explain a failure. Docstrings
+are exempt; they never reach a pipe. Pinned by
+`test_everything_the_guard_prints_is_ascii`.
+
+| Consumer | Uses | Verified by the hook |
 |---|---|---|
-| `task_tracker` (`C:\Users\griff\Desktop\code\task_tracker`) | `open_session`, `Session.deliver`, `safe_line`, `cap`, `unfocused_startup`, `console_input.PASTE_END` | `& ".venv\Scripts\python.exe" -m pytest tests/ -q` in that repo |
-
-**Touching `session.py`, `console_input.py` or `text.py` means running every
-consumer's suite too, not just this one.** Adding a consumer means adding a row.
+| `task_tracker` (`C:\Users\griff\Desktop\code\task_tracker`) | `open_session`, `Session.deliver`, `safe_line`, `cap`, `unfocused_startup`, `console_input.PASTE_END` | yes — `consumers.json` |
+| `game-learnings` | not yet a consumer; add the row when it lands | — |
 
 ## Layout
 

@@ -78,8 +78,21 @@ property the whole layout is chosen for, because the intent is that every
 consumer always runs the newest version of this.
 
 The cost of that, stated plainly: **a breaking change here breaks every
-consumer immediately**, with no pin to hide behind. Run this repo's suite *and*
-the consumer's after changing anything in `session.py` or `console_input.py`.
+consumer immediately**, with no pin to hide behind.
+
+That is not left to memory. `consumers.json` lists every project that imports
+this package, and a PostToolUse hook runs each one's test suite whenever
+anything under `claude_console/` is written — a consumer going red blocks the
+edit with its failing output. Run it by hand any time with:
+
+```powershell
+python tools/check_consumers.py
+```
+
+**Adopting this module in a new project is two steps:** install it editable
+(below), then add a row to `consumers.json` so the guard covers you. Skip the
+second and your project still works — it just stops being something a change
+here is checked against.
 
 Alternatives that were considered and rejected: a committed `sys.path` shim in
 each repo (works, needs no install, but bakes an absolute machine path into

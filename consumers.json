@@ -1,0 +1,23 @@
+{
+  "_why": [
+    "Every project on this machine that imports claude_console, and how to run",
+    "its tests. Consumers install EDITABLE, so they always get the newest code",
+    "with no update step -- which means the risk runs the other way: a change",
+    "here reaches every consumer instantly, and nothing tells you it broke one",
+    "until you open that app.",
+    "",
+    "tools/check_consumers.py reads this file, and .claude/hooks/consumer_check.py",
+    "runs it whenever anything under claude_console/ is edited. Adding a project",
+    "is one entry here -- no code change, and the hook picks it up immediately.",
+    "",
+    "python is relative to path; verify is argv passed to that interpreter."
+  ],
+  "consumers": [
+    {
+      "name": "task_tracker",
+      "path": "C:/Users/griff/Desktop/code/task_tracker",
+      "python": ".venv/Scripts/python.exe",
+      "verify": ["-m", "pytest", "tests/", "-q"]
+    }
+  ]
+}
