@@ -134,6 +134,9 @@ def test_text_is_typed_into_another_process_console():
     # Delivered whole, and wrapped in the bracketed-paste markers so the
     # receiver treats it as one paste rather than keystrokes ending in Enter.
     assert "delivered=True" in probe.stdout, probe.stdout
+    # And confirmed from the console's own screen rather than from a fake of
+    # it: the text was seen in the box, so the retry never ran.
+    assert "pastes=1" in probe.stdout, probe.stdout
 
 
 def test_deliver_submits_every_command_before_typing_the_prompt(monkeypatch):
@@ -309,10 +312,16 @@ class FakeSession:
     shows rather than by a sleep.
     """
 
-    def __init__(self, reads_input=True, ignores_enter=False, writes_at_most=None):
+    def __init__(self, reads_input=True, ignores_enter=False, writes_at_most=None,
+                 eats_pastes=0):
         self.box = ""
         self.reads_input = reads_input
         self.ignores_enter = ignores_enter
+        # A paste the console accepts and the session never shows. This is the
+        # reported failure in one flag: the write succeeds, the buffer takes
+        # it, and it does not reach the box — so nothing but reading the box
+        # back can tell it apart from a hand-off that worked.
+        self.eats_pastes = eats_pastes
         # A ceiling on how many input records one write may land, for the
         # short-write case: WriteConsoleInputW is allowed to accept fewer
         # records than it was handed, which cuts a bracketed paste in half.
@@ -334,6 +343,8 @@ class FakeSession:
         if text == console_input.CLEAR_LINE or (text == "\r"
                                                 and not self.ignores_enter):
             self.box = ""
+        elif text.startswith(console_input.PASTE_START) and self.eats_pastes:
+            self.eats_pastes -= 1
         elif text != "\r":
             self.box += text.replace(console_input.PASTE_START, "").replace(
                 console_input.PASTE_END, "")
@@ -427,10 +438,14 @@ def test_a_paste_cut_short_still_closes_its_bracket(monkeypatch):
     # everything typed next, by this app or by the user at the keyboard, as
     # more pasted content. The write is a failure either way; what must not
     # happen is that it leaves the session wedged.
+    #
+    # One attempt, because this is about the bracket rather than the retry —
+    # the retries have their own tests below, and letting them run here would
+    # bury the two writes being asserted under six more.
     opening = console_input._records_for(console_input.PASTE_START)
     session = live_session(monkeypatch, writes_at_most=opening + 4)
 
-    assert console_input.paste(7, "BUG: body") is False
+    assert console_input.paste(7, "BUG: body", attempts=1) is False
     assert session.writes == [
         console_input.PASTE_START + "BUG: body" + console_input.PASTE_END,
         console_input.PASTE_END,
@@ -444,7 +459,171 @@ def test_a_paste_that_landed_nothing_writes_no_stray_terminator(monkeypatch):
     # bought for a bracket that was never opened.
     session = live_session(monkeypatch, writes_at_most=0)
 
-    assert console_input.paste(7, "BUG: body") is False
+    assert console_input.paste(7, "BUG: body", attempts=1) is False
     assert session.writes == [
         console_input.PASTE_START + "BUG: body" + console_input.PASTE_END,
     ]
+
+
+# Both captured from live sessions on 2026-07-26, because every rule in
+# `box_shows` is about what Claude Code actually draws and none of it is
+# guessable. Filler rows are dropped; nothing else is edited.
+PLACEHOLDER_SCREEN = """
+ ▐▛███▜▌   Claude Code v2.1.220
+──────────────────────────────────────────────────────────── PROBE handover ──
+> Try "create a util logging.py that..."
+──────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+"""
+
+PASTED_BLOCK_SCREEN = """
+ ▐▛███▜▌   Claude Code v2.1.220
+─────────────────────────────────────────────────────────── PROBE multiline ──
+> [Pasted text #1 +29 lines]
+──────────────────────────────────────────────────────────────────────────────
+  paste again to expand
+"""
+
+LONG_PROMPT = "\n".join(f"BUG: line {index}" for index in range(1, 31))
+
+
+def test_an_empty_box_is_not_empty_on_a_fresh_session():
+    # It holds a placeholder hint. So "the box has something in it" proves
+    # nothing about whether OUR text arrived, which is why the confirmation
+    # matches the text rather than the emptiness.
+    assert console_input.prompt_box(PLACEHOLDER_SCREEN) != ""
+    assert console_input.box_shows(PLACEHOLDER_SCREEN, "BUG: body") is False
+
+
+def test_a_long_paste_is_recognised_by_the_placeholder_it_collapses_into():
+    # A 30-line prompt is not drawn as its text at all. Matching the prose
+    # would report a perfectly good hand-off as lost and then paste it again
+    # on top of itself.
+    assert console_input.box_shows(PASTED_BLOCK_SCREEN, LONG_PROMPT) is True
+
+
+def test_a_screen_with_no_readable_box_is_never_taken_as_delivered():
+    # Same fail-safe as is_ready and prompt_box: a layout this cannot read
+    # costs a retry and then the clipboard, never a wrong claim of success.
+    assert console_input.box_shows("nothing recognisable here", "BUG: body") is False
+
+
+def test_a_prompt_the_session_ate_is_written_again(monkeypatch):
+    """The reported bug, and the fix for it in one test.
+
+    The write succeeds and the text never reaches the box. Nothing but reading
+    the box back can see that, which is why this was silent for as long as it
+    was: `paste` used to return the success of the *write*.
+    """
+    session = live_session(monkeypatch, eats_pastes=1)
+    payload = console_input.PASTE_START + "BUG: body" + console_input.PASTE_END
+
+    assert console_input.paste(7, "BUG: body") is True
+    assert session.writes == [payload, console_input.CLEAR_LINE, payload]
+    # Exactly one copy: measured, two pastes with nothing between them
+    # concatenate into "…bodyBUG: body".
+    assert session.box == "BUG: body"
+
+
+def test_the_last_attempt_is_left_in_the_box_rather_than_cleared(monkeypatch):
+    """A wrong confirmation must not empty a box that actually worked.
+
+    If the text is landing and the *reading* is what is broken — a layout
+    `prompt_box` cannot parse — then clearing on the way out turns a hand-off
+    that arrived into an empty box. Clearing between attempts stops two copies
+    concatenating; clearing after the last one has nothing left to protect.
+    """
+    session = live_session(monkeypatch, eats_pastes=99)
+    payload = console_input.PASTE_START + "BUG: body" + console_input.PASTE_END
+
+    assert console_input.paste(7, "BUG: body") is False
+    assert session.writes[-1] == payload
+    assert session.writes.count(console_input.CLEAR_LINE) == (
+        console_input.PASTE_ATTEMPTS - 1)
+
+
+def test_a_delivery_that_arrived_says_so(monkeypatch):
+    live_session(monkeypatch)
+
+    result = console_input.deliver(7, ["/color red"], "BUG: body")
+
+    assert (result.commands_submitted, result.commands_total) == (1, 1)
+    assert result.prompt_typed is True
+    assert result.complete is True
+
+
+def test_a_prompt_that_never_landed_is_reported_rather_than_swallowed(monkeypatch):
+    # Quiet to the session is still the rule — nothing raises. Quiet to the
+    # CALLER is what left a hand-off that typed nothing looking exactly like
+    # one that worked.
+    live_session(monkeypatch, eats_pastes=99)
+
+    result = console_input.deliver(7, [], "BUG: body")
+
+    assert result.prompt_typed is False
+    assert result.complete is False
+
+
+def test_a_command_that_was_abandoned_is_counted(monkeypatch):
+    live_session(monkeypatch, ignores_enter=True)
+
+    result = console_input.deliver(7, ["/rename A", "/color red"], "BUG: body")
+
+    assert (result.commands_submitted, result.commands_total) == (0, 2)
+    assert result.prompt_typed is True
+    assert result.complete is False
+
+
+def test_the_caller_is_told_when_it_is_over(monkeypatch):
+    # The only way a consumer can say "it is on your clipboard": by then the
+    # call that started this returned long ago.
+    live_session(monkeypatch, eats_pastes=99)
+    reported = []
+
+    console_input.deliver_when_ready(7, [], "BUG: body", reported.append).join(10)
+
+    assert [result.prompt_typed for result in reported] == [False]
+
+
+def test_a_callback_that_raises_cannot_break_the_delivery(monkeypatch):
+    live_session(monkeypatch)
+
+    def explode(result):
+        raise RuntimeError("the consumer's reporting is broken")
+
+    thread = console_input.deliver_when_ready(7, [], "BUG: body", explode)
+    thread.join(10)
+
+    assert thread.is_alive() is False
+
+
+def test_a_failed_delivery_records_the_screen_that_explains_it(
+        monkeypatch, the_suite_never_writes_to_the_real_delivery_log):
+    """The log is the deliverable, not a nicety.
+
+    "Sometimes the prompt gets eaten" could not be answered from anything on
+    this machine, because nothing recorded which of the ways it can be lost
+    had happened. A failure now leaves the session's own screen behind, which
+    is the one artifact that names a startup dialog, a box that already had
+    something in it, or a layout nothing here could read.
+    """
+    live_session(monkeypatch, eats_pastes=99)
+
+    console_input.deliver(7, [], "BUG: body")
+
+    written = the_suite_never_writes_to_the_real_delivery_log.read_text(
+        encoding="utf-8")
+    assert "INCOMPLETE" in written
+    assert "prompt attempt 3/3 did not reach the box" in written
+    # The screen itself, indented under its label.
+    assert "| > " in written
+
+
+def test_logging_that_fails_never_takes_the_hand_off_with_it(monkeypatch):
+    # A log that can break a delivery is worse than no log. `deliver` rather
+    # than `paste`, because a paste that lands first time has nothing to say
+    # and would not exercise the writer at all.
+    monkeypatch.setenv("CLAUDE_CONSOLE_LOG", "Z:/no/such/drive/delivery.log")
+    live_session(monkeypatch)
+
+    assert console_input.deliver(7, [], "BUG: body").prompt_typed is True

@@ -31,7 +31,7 @@ def spawned(monkeypatch):
     monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeSession())
     monkeypatch.setattr(
         console_input, "deliver_when_ready",
-        lambda pid, commands, text: typed.update(
+        lambda pid, commands, text, on_finish=None: typed.update(
             pid=pid, commands=commands, text=text))
     return typed
 
@@ -192,3 +192,95 @@ def test_deliver_now_runs_on_this_thread_for_a_caller_about_to_exit(monkeypatch)
     claude_console.open_session(Path("C:/repos/x")).deliver_now(prompt="hi")
 
     assert delivered == {"pid": FakeSession.pid, "commands": [], "text": "hi"}
+
+
+def test_a_name_rides_on_the_launch_instead_of_being_typed():
+    """The flag exists, and it is why `/rename` is off the critical path.
+
+    Measured against a live session (2026-07-26): `claude -n 'NAME'` puts the
+    name in the prompt box's separator and in the terminal title, the moment
+    the window is drawn. A typed `/rename` had to wait for a prompt box, land
+    in it, and be seen to leave again before anything else could be written —
+    two screen round-trips, every one of which could time out on a slow start
+    and take the prompt down with it.
+    """
+    argv = session.default_launch("BUG: eaten prompts")
+
+    assert argv[:-1] == session.DEFAULT_LAUNCH[:-1]
+    assert argv[-1] == ("claude --dangerously-skip-permissions "
+                        "-n 'BUG: eaten prompts'")
+
+
+def test_an_apostrophe_in_a_name_cannot_break_out_of_its_quotes():
+    # A session name is a task title — user text, going into a PowerShell
+    # command line. Inside single quotes only `'` is special, and doubling it
+    # is how PowerShell escapes it.
+    assert session.powershell_quote("Griff's tasks") == "'Griff''s tasks'"
+    assert session.default_launch("Griff's tasks")[-1].endswith(
+        "-n 'Griff''s tasks'")
+
+
+def test_a_newline_in_a_name_cannot_become_a_second_command():
+    # `safe_line` runs inside default_launch rather than being the caller's
+    # job, so no consumer can skip it. A raw newline in a -Command string is a
+    # statement separator.
+    argv = session.default_launch("tasks\nrm -rf /")
+
+    assert "\n" not in argv[-1]
+    assert argv[-1].endswith("-n 'tasks rm -rf /'")
+
+
+def test_a_name_with_nothing_left_after_cleaning_is_no_name_at_all():
+    # Not `-n ''`, which would name the session the empty string.
+    assert session.default_launch("") == session.DEFAULT_LAUNCH
+    assert session.default_launch("\x1b\x00\x7f") == session.DEFAULT_LAUNCH
+
+
+def test_a_long_name_is_capped_before_it_reaches_the_command_line():
+    argv = session.default_launch("x" * 200)
+
+    assert argv[-1].endswith("-n '" + "x" * 59 + "…'")
+
+
+def test_open_session_puts_the_name_on_the_launch_and_types_no_rename(monkeypatch):
+    captured = {}
+    typed = {}
+
+    def fake_popen(args, **kwargs):
+        captured["argv"] = args
+        return FakeSession()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        console_input, "deliver_when_ready",
+        lambda pid, commands, text, on_finish=None: typed.update(commands=commands))
+
+    opened = claude_console.open_session(Path("C:/repos/x"), name="GAP0")
+    opened.deliver(prompt="BUG: body", commands=["/color green"])
+
+    assert captured["argv"][-1].endswith("-n 'GAP0'")
+    assert opened.pending_name == ""
+    # The whole point: nothing about the name is typed into the session.
+    assert typed["commands"] == ["/color green"]
+
+
+def test_a_caller_that_brought_its_own_argv_gets_the_typed_rename_instead(monkeypatch):
+    """There is no safe way to inject a flag into someone else's command line.
+
+    So that session keeps the old behaviour rather than losing its name, and
+    the fallback lives here rather than in the consumer — a consumer that has
+    to choose between two ways of naming a session is a consumer with two
+    behaviours to keep in step.
+    """
+    typed = {}
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: FakeSession())
+    monkeypatch.setattr(
+        console_input, "deliver_when_ready",
+        lambda pid, commands, text, on_finish=None: typed.update(commands=commands))
+
+    opened = claude_console.open_session(
+        Path("C:/repos/x"), launch=["pwsh", "-c", "claude"], name="GAP0")
+    opened.deliver(prompt="BUG: body", commands=["/color green"])
+
+    assert opened.pending_name == "GAP0"
+    assert typed["commands"] == ["/rename GAP0", "/color green"]

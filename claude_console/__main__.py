@@ -45,6 +45,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="working directory to open the session in")
     parser.add_argument("--prompt-file", metavar="PATH",
                         help="file holding the prompt to type; '-' reads stdin")
+    parser.add_argument("--name", default="", metavar="NAME",
+                        help="display name for the session — carried by the "
+                             "launch itself, so it cannot be lost to a slow "
+                             "start the way a typed /rename can")
     parser.add_argument("--command", action="append", default=[], metavar="LINE",
                         help="a slash command to submit first, e.g. '/color green'. "
                              "Repeatable. Submitted in order, before the prompt")
@@ -56,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     prompt = _read_prompt(args.prompt_file)
-    session = open_session(args.cwd, args.launch or None)
+    session = open_session(args.cwd, args.launch or None, name=args.name)
 
     # Before any attach. See the module docstring.
     print(session.pid, flush=True)

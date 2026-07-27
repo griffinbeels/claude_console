@@ -4,8 +4,16 @@
 its own — pytest's terminal would go with it. Running both halves here keeps
 that where it belongs: in a throwaway process.
 
-  child   prints a fake "ready" prompt, then logs every character it reads
+  child   prints a fake "ready" prompt, draws what it reads into a prompt-box
+          row the way a session does, and logs every character it received
   parent  opens the child in a new console, types into it, prints the log
+
+The child echoes because `paste` now *confirms* — it reads the box back and
+only reports success once its own text is showing there. A child that read
+without drawing would fail that confirmation forever, and the honest fix is
+for the fake session to behave like the real one rather than for the test to
+opt out of the check. The layout it draws is the one captured from a live
+session in test_console_input.py.
 """
 
 import subprocess
@@ -33,6 +41,30 @@ from claude_console import console_input
 CONSOLE_FLAGS = subprocess.CREATE_NO_WINDOW
 
 
+# How long the child holds its console open after the paste completes. The
+# parent reads the box back to confirm delivery, and a console that vanishes
+# the instant the last character arrives cannot be read at all. This paces
+# nothing: it keeps an artifact alive for the observer, which is the opposite
+# of the sleep invariant 8 forbids.
+LINGER_SECONDS = 3.0
+
+
+def draw_box(seen: list[str]) -> None:
+    """Show what has been received the way a session shows its prompt box.
+
+    Nothing is drawn until the opening marker has arrived in full, and only
+    printable characters are drawn — a half-received `ESC [ 2 0 0 ~` written
+    to the screen would be interpreted as a terminal escape rather than shown.
+    """
+    text = "".join(seen)
+    if console_input.PASTE_START not in text:
+        return
+    body = text.split(console_input.PASTE_START, 1)[1]
+    body = body.split(console_input.PASTE_END, 1)[0]
+    print("\r> " + "".join(char for char in body if char.isprintable()),
+          end="", flush=True)
+
+
 def run_child(log_path: str) -> None:
     import msvcrt
 
@@ -44,8 +76,14 @@ def run_child(log_path: str) -> None:
     while time.time() < deadline and console_input.PASTE_END not in "".join(seen):
         if msvcrt.kbhit():
             seen.append(msvcrt.getwch())
+            draw_box(seen)
         else:
             time.sleep(0.01)
+    holding = time.time() + LINGER_SECONDS
+    while time.time() < holding:
+        if msvcrt.kbhit():
+            seen.append(msvcrt.getwch())
+        time.sleep(0.01)
     Path(log_path).write_text("".join(seen), encoding="utf-8", newline="\n")
 
 
@@ -67,6 +105,10 @@ def run_parent() -> None:
     payload = console_input.PASTE_START + "hello there" + console_input.PASTE_END
     print(f"typed={typed}")
     print(f"delivered={payload in received}")
+    # One paste, not three: the confirmation saw the text in the box, so the
+    # retry never ran. This is the half a mocked screen cannot prove — that
+    # what `box_shows` reads back is what a real console really shows.
+    print(f"pastes={received.count(console_input.PASTE_START)}")
     print(f"received={received!r}")
 
 

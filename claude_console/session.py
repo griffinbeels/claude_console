@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 from . import environment
+from .text import cap, safe_line
 
 NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
@@ -65,6 +66,60 @@ DEFAULT_LAUNCH = [
 SW_SHOWNOACTIVATE = 4
 
 
+def display_name(name: str) -> str:
+    """`name` as a session can wear it, or "" if nothing survives cleaning.
+
+    One place, because both users of a name need the identical string: the
+    launch flag that carries it, and the `/rename` fallback for a caller that
+    brought its own argv. Two spellings of "clean" would name the same session
+    two different things depending on how it was started.
+    """
+    return cap(safe_line(name))
+
+
+def powershell_quote(value: str) -> str:
+    """`value` as a single-quoted PowerShell string, safe to interpolate.
+
+    The launch is one PowerShell command line and the name in it is text a
+    user typed — a task title, most of the time. Inside single quotes
+    PowerShell treats every character literally except `'`, which is escaped
+    by doubling it; nothing else needs escaping and nothing else is escaped,
+    so a name reaches the session exactly as it was written.
+
+    Quoting lives here rather than at the call site for the same reason
+    `display_name` does: a caller that assembles the flag itself can get this
+    wrong, and the failure is a command line, which is the worst place for it.
+    """
+    return "'" + value.replace("'", "''") + "'"
+
+
+def default_launch(name: str = "") -> list[str]:
+    """The argv for a session, carrying `name` as its display name.
+
+    `-n` is what makes naming a session part of *opening* it rather than
+    something typed into it afterwards. Measured against a live session
+    (2026-07-26): the name lands in the prompt box's separator and in the
+    terminal title, and it is there the instant the window comes up — no
+    waiting for a prompt box, no slash command to submit, nothing to lose on a
+    slow start.
+
+    That matters more than it reads. A typed `/rename` was the longest thing
+    in the delivery, two screen round-trips before anything else could be
+    written, and every one of its failure modes ended with the prompt itself
+    arriving late or not at all. The flag has none: it is applied by the
+    process that draws the window, before this module types a single
+    character.
+
+    The name is cleaned and quoted here rather than by the caller, so no
+    consumer can get either wrong — see `display_name` and `powershell_quote`.
+    """
+    named = display_name(name)
+    if not named:
+        return list(DEFAULT_LAUNCH)
+    return [*DEFAULT_LAUNCH[:-1],
+            f"{DEFAULT_LAUNCH[-1]} -n {powershell_quote(named)}"]
+
+
 def unfocused_startup() -> "subprocess.STARTUPINFO":
     """STARTUPINFO for a window that appears without becoming active.
 
@@ -89,8 +144,8 @@ def claude_environment() -> dict[str, str]:
     return environment.login_environment()
 
 
-def spawn_claude(cwd: Path,
-                 launch: list[str] | None = None) -> subprocess.Popen:
+def spawn_claude(cwd: Path, launch: list[str] | None = None,
+                 name: str = "") -> subprocess.Popen:
     """Start a Claude session in `cwd`, in a new console.
 
     `CREATE_NEW_CONSOLE` from a console-less parent is what reaches Windows'
@@ -98,13 +153,16 @@ def spawn_claude(cwd: Path,
     user actually develops in.
 
     `launch` replaces the whole argv, PowerShell wrapper included: a caller that
-    names its own shell gets exactly what it named.
+    names its own shell gets exactly what it named — including responsibility
+    for the name, since there is no safe way to inject a flag into someone
+    else's command line. `open_session` covers that case by typing `/rename`
+    instead, which is what this used to do for every session.
 
     Returns the session's own process — the pid to type into. Callers should
     still prefer `claude_console.open_session`, which is the composed call.
     """
     return subprocess.Popen(
-        launch or DEFAULT_LAUNCH,
+        launch or default_launch(name),
         cwd=Path(cwd),
         creationflags=NEW_CONSOLE,
         env=claude_environment(),

@@ -150,11 +150,17 @@ because the tempting mistakes are all in this list:
 2. **The prompt text, finished.** This module types exactly what it is given
    and adds nothing — no framing, no "when you are done, …". Build the string
    yourself.
-3. **Its own fallback.** Delivery is best-effort and fails silently by design:
-   a session that never shows a prompt box just does not get typed into. Every
-   consumer is expected to put the same text somewhere the user can reach —
-   task_tracker copies it to the clipboard first — so that a timeout costs one
-   Ctrl+V rather than the text itself.
+3. **Its own fallback, and something that says so.** Delivery is best-effort
+   and never raises: a session that never shows a prompt box just does not get
+   typed into. Every consumer is expected to put the same text somewhere the
+   user can reach — task_tracker copies it to the clipboard first — so that a
+   failure costs one Ctrl+V rather than the text itself.
+
+   **Pass `on_finish` and tell them when it happens.** An empty prompt box
+   looks exactly like a hand-off that worked, and the person who opened the
+   window is looking at the window, not at your app. `on_finish` is handed a
+   `Delivery` on the background thread; `had_prompt and not prompt_typed` is
+   the case worth a message, and a failed command usually is not.
 4. **`safe_line()` on anything it did not author.** If you build a slash
    command out of text from a file, a form or a filename, clean it first. An
    unescaped `ESC[201~` closes the bracketed paste early and hands the rest of
@@ -168,21 +174,36 @@ because the tempting mistakes are all in this list:
 
 | Call | Does |
 |---|---|
-| `open_session(cwd, launch=None)` | Spawn a session and resolve its pid. Returns `Session` |
-| `Session.deliver(prompt, commands)` | Submit each command, then leave the prompt typed and unsent. Background |
-| `Session.deliver_now(prompt, commands)` | The same, on this thread, for a caller about to exit |
+| `open_session(cwd, launch=None, name="")` | Spawn a session and resolve its pid. Returns `Session` |
+| `Session.deliver(prompt, commands, on_finish=None)` | Submit each command, then leave the prompt typed and unsent. Background |
+| `Session.deliver_now(prompt, commands)` | The same, on this thread, for a caller about to exit. Returns the `Delivery` |
 | `Session.window()` | The console's `HWND`, or 0. Under Windows Terminal this is the *pseudo*-console window, not the visible one |
 | `Session.pid` / `.host` | The session's pid / the `Popen` behind it — the same process |
+| `console_input.Delivery` | What a delivery managed: `commands_submitted`, `commands_total`, `had_prompt`, `prompt_typed`, `seconds`, `.complete` |
+
+**Name a session through `name=`, never by typing `/rename` yourself.** It
+travels on the launch as `claude -n <name>`, so it is applied by the process
+that draws the window — before this module types anything, and immune to a
+slow start. A caller that supplies its own `launch` cannot have a flag injected
+into its command line, so that session falls back to a typed `/rename` which
+`deliver` puts in front of the commands for you. Either way you pass `name=`
+and never build the command line or the slash command yourself.
 
 `launch` defaults to `claude` running inside `powershell.exe -NoExit`, so when
 Claude exits you are left at a PowerShell prompt in the session's directory
 rather than watching the window and its scrollback disappear. An override
 replaces the whole argv, wrapper included.
 
-Lower-level, all public: `spawn_claude`, `session_pid`, `unfocused_startup`
-(for spawning something the user did *not* ask for — a window like that still
-may not activate), `claude_environment`, `login_environment`, `safe_line`,
-`cap`, and the `console_input` and `environment` submodules.
+**When a hand-off misbehaves, read the log.** Every delivery appends what it
+did to `%LOCALAPPDATA%\claude_console\delivery.log` — each step, how long it
+took, and on failure the session's own screen, which is the artifact that
+names the cause. `CLAUDE_CONSOLE_LOG` moves it.
+
+Lower-level, all public: `spawn_claude`, `session_pid`, `default_launch`,
+`display_name`, `unfocused_startup` (for spawning something the user did *not*
+ask for — a window like that still may not activate), `claude_environment`,
+`login_environment`, `safe_line`, `cap`, and the `console_input`,
+`environment` and `journal` submodules.
 
 ## Tests
 

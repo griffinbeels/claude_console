@@ -84,7 +84,7 @@ are exempt; they never reach a pipe. Pinned by
 
 | Consumer | Uses | Verified by the hook |
 |---|---|---|
-| `task_tracker` (`C:\Users\griff\Desktop\code\task_tracker`) | `open_session`, `Session.deliver`, `safe_line`, `cap`, `unfocused_startup`, `console_input.PASTE_END` | yes — `consumers.json` |
+| `task_tracker` (`C:\Users\griff\Desktop\code\task_tracker`) | `open_session` (with `name=`), `Session.deliver` (with `on_finish=`), `console_input.Delivery`, `safe_line`, `cap`, `unfocused_startup`, `console_input.PASTE_END` | yes — `consumers.json` |
 | `game-learnings` | not yet a consumer; add the row when it lands | — |
 
 ## Layout
@@ -96,6 +96,7 @@ are exempt; they never reach a pipe. Pinned by
 | `console_input.py` | Everything about typing into another process's console: bracketed paste, waiting for the prompt box, reading the screen back |
 | `environment.py` | The environment Windows gives a freshly launched process |
 | `text.py` | `safe_line` and `cap` — making a string safe to submit as a line |
+| `journal.py` | The delivery log — where it lives, and that writing it can never break a hand-off |
 | `__main__.py` | The CLI, for consumers that are not Python |
 
 `console_input.py` is ~490 lines, past the ~300 this machine's style prefers, and
@@ -235,11 +236,17 @@ the measurements are in the comments beside the code — do not compress them ou
    still in the box, so `deliver` calls `clear` — **Ctrl+U**, measured; Escape,
    the obvious guess, does nothing to a typed line at all.
 
-10. **Give up quietly, and expect the caller to have a fallback.** Every failure
+10. **Give up quietly to the session, and report to the caller.** Every failure
     after the process exists is silent by design — the spawn itself is the only
     thing that raises. That is only safe because consumers are told to put the
-    same text somewhere reachable first (README, section 5). Do not add loud
-    failure here without revisiting that contract.
+    same text somewhere reachable first (README, section 3).
+
+    **Silent to the *caller* was a bug, and it was fixed on 2026-07-26.**
+    `deliver` returns a `Delivery` and `deliver_when_ready` takes an
+    `on_finish`, because there was no way for a consumer to learn that its
+    fallback had become the only copy — an empty prompt box looks exactly like
+    a hand-off that worked, and the person who opened the window is looking at
+    the window. Nothing raises and nothing blocks; the caller is simply told.
 
 11. **Anything submitted as a line goes through `safe_line` first.** A string
     carrying `ESC[201~` closes the bracketed paste early, leaving whatever
@@ -258,6 +265,52 @@ the measurements are in the comments beside the code — do not compress them ou
     against the focus watchdog `open_session` used to start, and two tests
     caught it. `open_session` therefore calls `_session.foo()`, and the reason
     is written into the function so nobody "tidies" it back.
+
+13. **A prompt is proven to have arrived, and written again if it did not.**
+    Every command was confirmed twice — seen in the box, then seen to leave it
+    — while the prompt, the thing a hand-off exists to deliver, was written
+    and forgotten. `paste` returned the success of the *write*. So every way
+    the text could be lost was silent, unrecoverable and unrecorded, which is
+    how "sometimes the prompt gets eaten" survived as a feeling about slow
+    windows rather than a bug report.
+
+    `paste` now writes, waits for the box to show its own text, and on failure
+    clears and writes again — `PASTE_ATTEMPTS` times. Four measurements
+    against live sessions (2026-07-26) hold it up, and it is wrong without any
+    of them:
+
+    - **An empty box is not empty.** A fresh session draws a placeholder
+      (`Try "create a util logging.py that..."`), so "the box has something in
+      it" proves nothing. The confirmation matches our own text.
+    - **A long paste is not drawn as its text.** It collapses to
+      `[Pasted text #1 +29 lines]` — a 30-line prompt did, a 3-line one did
+      not — so matching the prose alone would call a good hand-off lost and
+      then paste it again on top of itself. `PASTED_BLOCK` is the other half
+      of `box_shows`.
+    - **Ctrl+U takes a paste back out**, the collapsed block as well as a
+      typed line. That is what makes a retry idempotent.
+    - **Two pastes with nothing between them concatenate** —
+      `…hand-offBUG: a single line hand-off`. That is what makes clearing
+      first mandatory rather than tidy.
+
+    The **last** attempt is deliberately not cleared: if the confirmation is
+    what is broken rather than the write, the text is sitting in the box
+    unseen, and clearing on the way out would empty a box that worked.
+
+    `READY_TIMEOUT` went from 45 s to 180 s in the same change, and that is
+    part of the same bug. A session is "not ready" for every second a startup
+    dialog is up — measured, the workspace-trust question keeps `is_ready`
+    False until a person answers it — so 45 s was a deadline after which the
+    prompt was dropped for good.
+
+14. **A name rides on the launch, never on the keyboard.** `claude -n <name>`
+    is applied by the process drawing the window, before this module types a
+    character; a typed `/rename` was two screen round-trips standing between a
+    window opening and the tasks arriving in it, on the slowest part of a
+    session's life. `default_launch` cleans and quotes it, so no consumer can
+    get either wrong, and `open_session` keeps the typed fallback for a caller
+    that brought its own argv — there is no safe way to inject a flag into
+    someone else's command line. A consumer passes `name=` and builds neither.
 
 ## What conhost cost, kept so nobody re-derives it
 
@@ -328,6 +381,21 @@ them applies again the moment anyone considers pinning a host.
   is then the *user's* terminal rather than the session's.
 - Mock at the boundary: `_write_input` and `_screen_text` — never
   `subprocess.Popen` for the typing paths.
+- **`tests/conftest.py` points the delivery log at `tmp_path` for every test,
+  and that is a guard rather than tidiness.** Its default home is the user's
+  own `%LOCALAPPDATA%`, and the log's entire value is being readable after a
+  hand-off went wrong — a suite appending its fixtures to it would bury the
+  one occurrence somebody needs. Redirecting centrally means a new test file
+  inherits it instead of having to remember.
+- **The real-console probe's child echoes what it reads into a `> …` row**,
+  because `paste` now confirms from the screen. A child that read without
+  drawing would fail that confirmation forever, and the honest fix is for the
+  fake session to behave like the real one rather than for the test to opt out
+  of the check — the layout it draws is the one captured from a live session.
+  It also holds its console open for `LINGER_SECONDS` after the paste: a
+  console that vanishes with the last character cannot be read back at all.
+  That sleep keeps an artifact alive for the observer, which is the opposite
+  of the one invariant 8 forbids.
 - **Deliberately untested:** that a real Claude session reads what is typed.
   That was verified by hand against a live session on 2026-07-25 and is what
   produced invariant 8; automating it means spawning a window on the user's

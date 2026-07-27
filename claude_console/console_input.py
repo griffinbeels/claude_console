@@ -45,6 +45,9 @@ import threading
 import time
 from contextlib import contextmanager
 from ctypes import wintypes
+from dataclasses import dataclass
+
+from . import journal
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
@@ -61,7 +64,16 @@ CLEAR_LINE = "\x15"
 # the clipboard copy is still there.
 READY_MARKERS = ("shift+tab to cycle", "for shortcuts")
 
-READY_TIMEOUT = 45.0
+# Three minutes, and the length is the point. This was 45 s, which read as
+# generous and was in fact a data-loss deadline: a session is "not ready" for
+# every second a startup dialog is on screen, and the workspace-trust question
+# a never-opened folder starts on waits for a person (measured 2026-07-26 —
+# `is_ready` stayed False for the whole time the dialog was up). At 45 s the
+# hand-off gave up for good and the prompt was never typed at all, which is
+# exactly the reported failure: "the window opened slowly and my prompt was
+# eaten". Waiting costs a poll every 0.4 s on a daemon thread; giving up early
+# costs the text.
+READY_TIMEOUT = 180.0
 POLL_SECONDS = 0.4
 
 # A command's prompt box is already on screen by the time it is sent — unlike
@@ -75,6 +87,18 @@ COMMAND_TIMEOUT = 5.0
 # wrong, fall back to the clipboard" bound rather than a normal wait.
 ECHO_TIMEOUT = 8.0
 ECHO_POLL = 0.1
+
+# How many times a prompt that did not visibly land is written again. The text
+# appeared within ~220 ms in every measurement, so an attempt that reaches
+# ECHO_TIMEOUT is a session that ate it rather than a slow one, and the answer
+# to being eaten is to feed it again.
+PASTE_ATTEMPTS = 3
+
+# What the box shows instead of the text when a paste is long enough:
+# "[Pasted text #1 +29 lines]" (measured 2026-07-26 with a 30-line prompt; a
+# 3-line one still showed its first line). The number climbs with each paste
+# in a session, so only the stem is matched.
+PASTED_BLOCK = "[Pasted text"
 
 # Nothing here dresses the console any more, and both halves of that are
 # measured rather than dropped.
@@ -305,6 +329,37 @@ def prompt_box(screen: str) -> str:
     return ""
 
 
+def box_shows(screen: str, text: str) -> bool:
+    """Whether the prompt box is showing `text` — however it chose to draw it.
+
+    This is the proof that a paste was *taken*, as opposed to written into a
+    buffer and dropped, and every part of it is measured rather than assumed:
+
+    * A long paste is not drawn as its text at all. It collapses to
+      `[Pasted text #1 +29 lines]`, so matching the prose would report a
+      perfectly good hand-off as lost — and then paste it again on top of
+      itself.
+    * A short paste is drawn as its first line, which may wrap; only the first
+      row of the box carries the "> ", so only the start of the line can be
+      compared. ECHO_MATCH is the same slice `submit` recognises its own
+      command by.
+    * An *empty* box is not empty on a fresh session: it holds a placeholder
+      hint ('Try "create a util logging.py that..."'). So "the box has
+      something in it" proves nothing, and this has to match our own text.
+
+    Fails the same safe way as `is_ready` and `prompt_box`: a layout it cannot
+    read reads as "not landed", which costs a retry and then the clipboard,
+    never a wrong claim that the text arrived.
+    """
+    box = prompt_box(screen)
+    if not box:
+        return False
+    if PASTED_BLOCK in box:
+        return True
+    opening = text.strip().split("\n", 1)[0][:ECHO_MATCH]
+    return bool(opening) and opening in box
+
+
 def console_window(pid: int) -> int:
     """The window handle of the session's console, or 0 if there is not one yet.
 
@@ -360,13 +415,74 @@ def _wait(pid: int, settled, timeout: float, poll: float = POLL_SECONDS) -> bool
         time.sleep(poll)
 
 
-def paste(pid: int, text: str, timeout: float = READY_TIMEOUT) -> bool:
-    """Type `text` into the process's prompt box once it is accepting input."""
+def _record_screen(pid: int, label: str) -> None:
+    """Put the session's screen in the log, indented, for a failure to explain.
+
+    This is the artifact that names a cause — a startup dialog, a box that
+    already had something in it, a layout nothing here could read. Without it
+    a log line only says which step gave up, which is where the last
+    investigation started rather than where it ended.
+    """
+    with _attached(pid) as attached:
+        screen = _screen_text() if attached else None
+    if screen is None:
+        journal.record(f"pid {pid}: {label} — could not attach to the console")
+        return
+    rows = [row.rstrip() for row in screen.split("\n") if row.strip()]
+    journal.record(f"pid {pid}: {label}\n"
+                   + "\n".join("    | " + row for row in rows))
+
+
+def paste(pid: int, text: str, timeout: float = READY_TIMEOUT,
+          attempts: int = PASTE_ATTEMPTS) -> bool:
+    """Type `text` into the process's prompt box, and prove that it arrived.
+
+    This used to be write-and-hope, and it was the only write in the whole
+    protocol that was never checked: a command is proven twice — seen in the
+    box, then seen to leave it — while the prompt, the thing the hand-off
+    exists to deliver, was written into a buffer and forgotten. So every way
+    it could be lost was silent, unrecoverable and unrecorded, which is how
+    "sometimes the prompt gets eaten" stayed a mystery long enough to be
+    reported as a feeling about slow windows.
+
+    Two measurements make the retry safe, and it is unsafe without them:
+
+    * **Ctrl+U takes a paste back out**, a collapsed `[Pasted text #1 …]`
+      block as well as a typed line. So an attempt that may have half-landed
+      can be undone before the next one.
+    * **Two pastes with nothing between them concatenate** — measured, the box
+      read `…hand-offBUG: a single line hand-off`. So a retry that does not
+      clear first turns one lost prompt into one mangled one, which is worse.
+
+    The last attempt is deliberately *not* cleared. If the confirmation is
+    wrong rather than the write — a layout `prompt_box` cannot read — then the
+    text is sitting in the box unseen, and clearing it on the way out would
+    turn a hand-off that actually worked into an empty box. Clearing between
+    attempts prevents doubling; not clearing after the last one keeps the
+    failure no worse than it used to be.
+    """
     if not text:
         return False
     if not _wait(pid, is_ready, timeout):
+        journal.record(f"pid {pid}: paste gave up waiting for a prompt box "
+                       f"after {timeout:.0f}s")
+        _record_screen(pid, "screen when the wait for a prompt box ran out")
         return False
-    return _write_bracketed(pid, text)
+    for attempt in range(1, attempts + 1):
+        wrote = _write_bracketed(pid, text)
+        if wrote and _wait(pid, lambda screen: box_shows(screen, text),
+                           ECHO_TIMEOUT, ECHO_POLL):
+            if attempt > 1:
+                journal.record(f"pid {pid}: prompt landed on attempt {attempt}")
+            return True
+        journal.record(f"pid {pid}: prompt attempt {attempt}/{attempts} did not "
+                       f"reach the box (write={'ok' if wrote else 'failed'})")
+        if attempt == attempts:
+            break
+        # Whatever did arrive has to come out before writing it again.
+        _write(pid, CLEAR_LINE)
+    _record_screen(pid, "screen after the last prompt attempt")
+    return False
 
 
 def submit(pid: int, line: str, timeout: float = COMMAND_TIMEOUT) -> bool:
@@ -433,7 +549,32 @@ def clear(pid: int, line: str) -> bool:
                  ECHO_TIMEOUT, ECHO_POLL)
 
 
-def deliver(pid: int, commands: list[str], prompt: str) -> None:
+@dataclass(frozen=True)
+class Delivery:
+    """What a delivery managed to do. Reported, never raised.
+
+    "Give up quietly" is still the rule for the *session* — nothing here
+    throws, and the caller's clipboard copy is still the fallback — but quiet
+    used to mean nobody was told at all, so a hand-off that typed nothing
+    looked exactly like one that worked until someone glanced at the window.
+    A consumer that knows can say the one useful sentence: it is on your
+    clipboard, press Ctrl+V.
+    """
+
+    commands_submitted: int
+    commands_total: int
+    had_prompt: bool
+    prompt_typed: bool
+    seconds: float
+
+    @property
+    def complete(self) -> bool:
+        """Everything asked for reached the session."""
+        return (self.commands_submitted == self.commands_total
+                and self.prompt_typed == self.had_prompt)
+
+
+def deliver(pid: int, commands: list[str], prompt: str) -> Delivery:
     """Submit every command, then leave `prompt` typed but unsent.
 
     Commands go first because they are decoration on the hand-off, not the
@@ -454,22 +595,57 @@ def deliver(pid: int, commands: list[str], prompt: str) -> None:
     Terminal does with each. So the first thing that happens is the long wait
     for a prompt box.
 
-    Returns nothing: this runs off the caller's thread, on a daemon thread
-    with no one left to hand a result to.
+    Returns a `Delivery` rather than nothing. It still runs on a daemon thread
+    with nobody waiting on it, so the return is for `deliver_when_ready`'s
+    callback and for the log — a caller that ignores it is in exactly the
+    position every caller used to be in.
     """
+    began = time.monotonic()
+    journal.record(f"pid {pid}: delivering {len(commands)} command(s) and "
+                   f"{len(prompt.splitlines())} prompt line(s)")
+    submitted = 0
     timeout = READY_TIMEOUT
     for command in commands:
         if not submit(pid, command, timeout=timeout):
+            journal.record(f"pid {pid}: command did not submit: {command!r}")
             clear(pid, command)
             break
+        submitted += 1
         timeout = COMMAND_TIMEOUT
-    if prompt:
-        paste(pid, prompt)
+    typed = bool(prompt) and paste(pid, prompt)
+    result = Delivery(commands_submitted=submitted, commands_total=len(commands),
+                      had_prompt=bool(prompt), prompt_typed=typed,
+                      seconds=time.monotonic() - began)
+    journal.record(
+        f"pid {pid}: {'delivered' if result.complete else 'INCOMPLETE'} — "
+        f"commands {submitted}/{len(commands)}, "
+        f"prompt {'typed' if typed else 'not typed' if prompt else 'none'}, "
+        f"{result.seconds:.1f}s")
+    return result
 
 
-def deliver_when_ready(pid: int, commands: list[str], prompt: str) -> threading.Thread:
-    """Start `deliver` in the background so the caller's UI never waits on it."""
-    waiter = threading.Thread(target=deliver, args=(pid, commands, prompt),
-                              daemon=True)
+def deliver_when_ready(pid: int, commands: list[str], prompt: str,
+                       on_finish=None) -> threading.Thread:
+    """Start `deliver` in the background so the caller's UI never waits on it.
+
+    `on_finish` is called with the `Delivery` when it is over, on that same
+    background thread. A consumer that wants to tell someone the text never
+    arrived has no other way to find out: by then the call that started this
+    returned minutes ago.
+
+    A callback that raises is logged and swallowed. It runs on a daemon thread
+    where an exception has nowhere to surface, and a consumer's reporting bug
+    must not become a delivery that half-happened.
+    """
+    def run():
+        result = deliver(pid, commands, prompt)
+        if on_finish is None:
+            return
+        try:
+            on_finish(result)
+        except Exception as error:
+            journal.record(f"pid {pid}: on_finish raised {error!r}")
+
+    waiter = threading.Thread(target=run, daemon=True)
     waiter.start()
     return waiter
