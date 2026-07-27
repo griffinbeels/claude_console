@@ -51,11 +51,19 @@ def _new_console_references(module: Path):
 def test_nothing_but_the_session_itself_may_open_a_console_window():
     """A test that puts a window on screen is a bug in the test.
 
+    **This is now the only thing enforcing the focus rule, and the rule it
+    enforces is the whole of it.** `session.py` used to pin `conhost.exe` and
+    hand back stolen focus, on the theory that nothing this module opens may
+    ever activate. That was over-broad. Focus is opt-in, and a human gesture
+    earns it: pressing a button to open a session is one, so that window is
+    allowed to come to the front. Running the suite is not.
+
     Windows 11 delegates every *new* console to whatever is set as the default
     terminal application. When that is Windows Terminal, WT creates the window
     itself, so the spawner's STARTUPINFO never reaches it and
     `SW_SHOWNOACTIVATE` is silently discarded — a full, activated Terminal
-    window opens for as long as the child lives.
+    window opens for as long as the child lives. For a session that is the
+    point; for a test it is the bug.
 
     `tests/_console_probe.py` used CREATE_NEW_CONSOLE, so every run of the
     suite flashed one over whatever the user was typing into. That is most of

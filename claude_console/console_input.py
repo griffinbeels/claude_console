@@ -41,15 +41,12 @@ caller *before* calling in here.
 """
 
 import ctypes
-import shutil
 import threading
 import time
 from contextlib import contextmanager
 from ctypes import wintypes
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-user32 = ctypes.WinDLL("user32", use_last_error=True)
-shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
 PASTE_START = "\x1b[200~"
 PASTE_END = "\x1b[201~"
@@ -79,47 +76,30 @@ COMMAND_TIMEOUT = 5.0
 ECHO_TIMEOUT = 8.0
 ECHO_POLL = 0.1
 
-# The face a handed-off session is rendered in, and how long to keep trying
-# to apply it — the console does not exist for the first moments after Popen
-# returns, so the attach fails until it does.
+# Nothing here dresses the console any more, and both halves of that are
+# measured rather than dropped.
 #
-# Consolas is what a console falls back to with nothing configured, and it has
-# no quadrant block elements (U+2596–259F) — the characters Claude Code's logo
-# is drawn from. conhost does not fall back for them (it does font-link ⎿, ⏵,
-# ⏺, ✓, ✗ and ✻, which is why only the logo is affected), so they render as a
-# row of boxes with the code point printed inside. Cascadia Mono ships with
-# Windows 11 and has all of them.
-SESSION_FACE = "Cascadia Mono"
-FONT_TIMEOUT = 10.0
-
-# FF_MODERN | TMPF_VECTOR | TMPF_TRUETYPE — what a console stores for a
-# TrueType face, against 0 for the raster default.
-_TRUETYPE_FAMILY = 54
-_NORMAL_WEIGHT = 400
-
-# The image a session's icon is taken from, and how long to keep trying to put
-# it on the window — the same wait the font needs, for the same reason: the
-# console does not exist for the first moments after Popen returns.
+# **The font.** A session used to be forced onto Cascadia Mono, because conhost
+# renders the quadrant blocks Claude Code's logo is drawn from (U+2596–259F) as
+# boxes in its default Consolas. Windows Terminal draws them, and everything
+# else, without help — and it ignores `SetCurrentConsoleFontEx` outright
+# (measured 2026-07-26: `_apply_face` returned False against a WT-hosted
+# console; the font is a per-profile setting there). Forcing a face is now both
+# impossible and unnecessary.
 #
-# Resolved on PATH rather than taken from the launch command, because a
-# per-project override like `pwsh -c claude` still opens a Claude session and
-# should still say so on the taskbar.
-SESSION_IMAGE = "claude"
-ICON_TIMEOUT = 10.0
-
-# ICON_BIG is what the taskbar and Alt+Tab draw; ICON_SMALL is the title bar.
-# Setting one leaves the other on conhost's class icon.
-WM_SETICON = 0x0080
-ICON_SMALL, ICON_BIG = 0, 1
-
-# A cross-process SendMessage blocks until the receiving process pumps its
-# message queue, and this runs on the hand-off's daemon thread. SMTO_ABORTIFHUNG
-# plus a bound means a wedged console costs the icon rather than the thread.
-_SMTO_ABORTIFHUNG = 0x0002
-_ICON_SEND_MS = 1000
-
-# The one pair of handles every session's window is given. See session_icons.
-_icons = None
+# **The icon.** A session's window used to be given `claude.exe`'s icon, so its
+# taskbar button said Claude rather than "some terminal". Under WT that cannot
+# work and the failure is *silent*, which is the part worth writing down:
+# `GetConsoleWindow()` answers a `PseudoConsoleWindow` owned by the client, not
+# the visible `CASCADIA_HOSTING_WINDOW_CLASS` window that owns the taskbar
+# button — so `WM_SETICON` succeeds against a window nobody sees. Sending it to
+# the real Terminal window instead does change that window's icon (measured:
+# the handles read back as claude.exe's exactly) and the taskbar still draws
+# Terminal's, because a packaged app's button follows its AUMID manifest.
+# Confirmed by eye, since no API reads a taskbar button back.
+#
+# The need it served — telling Claude windows apart — is met by the session's
+# title, which `SetConsoleTitleW` is measured to push through to the WT window.
 
 # Enough of a command line to recognise it by in the prompt box. Distinctive
 # enough not to match the box's own placeholder hint, and short enough to
@@ -185,23 +165,8 @@ class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
                 ("dwMaximumWindowSize", COORD)]
 
 
-class CONSOLE_FONT_INFOEX(ctypes.Structure):
-    _fields_ = [("cbSize", wintypes.ULONG), ("nFont", wintypes.DWORD),
-                ("dwFontSize", COORD), ("FontFamily", wintypes.UINT),
-                ("FontWeight", wintypes.UINT),
-                ("FaceName", wintypes.WCHAR * 32)]  # LF_FACESIZE
-
-
 kernel32.CreateFileW.restype = wintypes.HANDLE
 kernel32.AttachConsole.argtypes = [wintypes.DWORD]
-shell32.ExtractIconExW.argtypes = [wintypes.LPCWSTR, ctypes.c_int,
-                                   ctypes.POINTER(wintypes.HICON),
-                                   ctypes.POINTER(wintypes.HICON), wintypes.UINT]
-user32.SendMessageTimeoutW.argtypes = [wintypes.HWND, wintypes.UINT,
-                                       wintypes.WPARAM, wintypes.LPARAM,
-                                       wintypes.UINT, wintypes.UINT,
-                                       ctypes.POINTER(wintypes.WPARAM)]
-
 
 def utf16_code_units(text: str) -> list[int]:
     """The text as Windows counts it: UTF-16 code units, not Python characters.
@@ -312,153 +277,6 @@ def _screen_text() -> str:
         rows.append(row_buffer[:read.value])
     kernel32.CloseHandle(handle)
     return "\n".join(rows)
-
-
-def _apply_face(face: str) -> bool:
-    """Put the attached console on `face`, and undo it if that is not what took.
-
-    An unknown face is not refused: the console accepts the call and picks
-    something of its own, which on a machine without this font would be a
-    downgrade rather than a fix. So the face is read back, and anything other
-    than the one asked for is put straight back to what it was.
-
-    Only the face is chosen — the size comes from whatever the console already
-    had, so a user who set a size keeps it.
-    """
-    handle = kernel32.CreateFileW(
-        "CONOUT$", _GENERIC_READ | _GENERIC_WRITE, _FILE_SHARE_READ_WRITE,
-        None, _OPEN_EXISTING, 0, None)
-    if handle == _INVALID_HANDLE:
-        return False
-    try:
-        before = CONSOLE_FONT_INFOEX()
-        before.cbSize = ctypes.sizeof(CONSOLE_FONT_INFOEX)
-        if not kernel32.GetCurrentConsoleFontEx(handle, False,
-                                                ctypes.byref(before)):
-            return False
-        wanted = CONSOLE_FONT_INFOEX.from_buffer_copy(before)
-        wanted.FaceName = face
-        wanted.FontFamily = _TRUETYPE_FAMILY
-        wanted.FontWeight = _NORMAL_WEIGHT
-        if not kernel32.SetCurrentConsoleFontEx(handle, False,
-                                                ctypes.byref(wanted)):
-            return False
-        landed = CONSOLE_FONT_INFOEX()
-        landed.cbSize = ctypes.sizeof(CONSOLE_FONT_INFOEX)
-        kernel32.GetCurrentConsoleFontEx(handle, False, ctypes.byref(landed))
-        if landed.FaceName == face:
-            return True
-        kernel32.SetCurrentConsoleFontEx(handle, False, ctypes.byref(before))
-        return False
-    finally:
-        kernel32.CloseHandle(handle)
-
-
-def use_font(pid: int, face: str = SESSION_FACE,
-             timeout: float = FONT_TIMEOUT) -> bool:
-    """Render the spawned session's console in a face that has its glyphs.
-
-    Worth doing at all only because of which host draws the window. Windows
-    delegates every new console to the default terminal application, and when
-    that is Windows Terminal the glyphs are fine — WT falls back to another
-    font per glyph. When it is Windows Console Host, as on this machine, there
-    is no fallback for the block elements and the logo comes out as boxes.
-    Conhost is also the only one of the two that honours `SW_SHOWNOACTIVATE`,
-    so it is the host worth keeping (invariant 10) and the font is the part
-    worth changing.
-
-    Setting it after the logo has already been painted is fine: the console
-    repaints its whole buffer in the new face. Retrying is not for that, it is
-    for the moment after `Popen` returns when the console does not exist yet.
-    """
-    deadline = time.monotonic() + timeout
-    while True:
-        with _attached(pid) as attached:
-            if attached and _apply_face(face):
-                return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(POLL_SECONDS)
-
-
-def session_icons() -> tuple[int, int]:
-    """The large and small icons a session's window wears, extracted once.
-
-    One pair serves every session, and **nothing ever destroys them**:
-    `DestroyIcon` on a handle a live window is holding is how an icon goes
-    blank, and every open session is holding this one. Extraction is cheap
-    enough to make the cache about correctness rather than speed — measured at
-    0.000 s against a 265 MB `claude.exe`.
-
-    `(0, 0)` when `claude` is not on PATH, or when the image it names carries
-    no icons. That is a session without an icon, not a session that failed.
-    """
-    global _icons
-    if _icons is None:
-        image = shutil.which(SESSION_IMAGE)
-        large, small = wintypes.HICON(), wintypes.HICON()
-        if image:
-            shell32.ExtractIconExW(image, 0, ctypes.byref(large),
-                                   ctypes.byref(small), 1)
-        _icons = (large.value or 0, small.value or 0)
-    return _icons
-
-
-def _apply_icon(icons: tuple[int, int]) -> bool:
-    """Put `icons` on the attached console's window, or say it could not.
-
-    Reads the window handle directly rather than through `console_window`,
-    which takes the attachment lock this is already holding.
-
-    A window handle of 0 is the ordinary case of being early — the console
-    exists before its window does — and also the permanent case for a console
-    opened with CREATE_NO_WINDOW, which has no window at all (measured:
-    `GetConsoleWindow` answers 0 for one). Neither is an error; both are a
-    console this cannot dress.
-    """
-    window = kernel32.GetConsoleWindow()
-    if not window:
-        return False
-    for kind, icon in ((ICON_BIG, icons[0]), (ICON_SMALL, icons[1])):
-        answer = wintypes.WPARAM(0)
-        if not user32.SendMessageTimeoutW(window, WM_SETICON, kind, icon,
-                                          _SMTO_ABORTIFHUNG, _ICON_SEND_MS,
-                                          ctypes.byref(answer)):
-            return False
-    return True
-
-
-def use_icon(pid: int, timeout: float = ICON_TIMEOUT) -> bool:
-    """Give the spawned session's window the icon of the thing running in it.
-
-    A console window wears the icon of the image its host was launched as, not
-    of the program inside it — so pinning the host (invariant 10) quietly cost
-    the session its Anthropic logo and left every hand-off looking like any
-    other terminal on the taskbar. Measured 2026-07-26, comparing icons pixel
-    by pixel: a window from `conhost.exe claude …` carries conhost.exe's icon
-    byte-for-byte, while `claude.exe` has one of its own two resource groups
-    away.
-
-    Setting it from here is the cheap half of the fix. The expensive half — a
-    shortcut handed to conhost as STARTF_TITLEISLINKNAME, which makes conhost
-    load the icon itself — would own the handle for the window's whole life,
-    and costs `subprocess.Popen` in the eight lines that carry invariants 8 and
-    10. This does not: the handles belong to *this* process, so a session that
-    outlives the tracker is left holding a dead one (measured: an icon handle
-    goes invalid the moment its process exits, and neither LR_SHARED nor a
-    module-resource load changes that).
-    """
-    icons = session_icons()
-    if not all(icons):
-        return False
-    deadline = time.monotonic() + timeout
-    while True:
-        with _attached(pid) as attached:
-            if attached and _apply_icon(icons):
-                return True
-        if time.monotonic() >= deadline:
-            return False
-        time.sleep(POLL_SECONDS)
 
 
 def is_ready(screen: str) -> bool:
@@ -630,20 +448,15 @@ def deliver(pid: int, commands: list[str], prompt: str) -> None:
     box; pasting on top of it would hand over the task prose glued to half a
     slash command.
 
-    The icon and the font go first, before the wait for a prompt box — they
-    are the two things here that do not need the session to be up, only its
-    console to exist, and a session opened with nothing selected gets both.
-    The icon leads: the taskbar button is there from the moment the window is,
-    and it is what tells this window apart from every other console.
+    This used to dress the console first — an icon and a font, applied before
+    the wait because they needed only the console to exist, not the session to
+    be up. Both are gone; see the note beside the constants for what Windows
+    Terminal does with each. So the first thing that happens is the long wait
+    for a prompt box.
 
     Returns nothing: this runs off the caller's thread, on a daemon thread
     with no one left to hand a result to.
     """
-    # Passed rather than defaulted, like every other timeout here: a default
-    # is bound at import, so the module attribute is the only spelling a test
-    # can shorten.
-    use_icon(pid, timeout=ICON_TIMEOUT)
-    use_font(pid, timeout=FONT_TIMEOUT)
     timeout = READY_TIMEOUT
     for command in commands:
         if not submit(pid, command, timeout=timeout):

@@ -13,13 +13,13 @@ This file is for someone **changing** the module. Read both before editing.
 ```powershell
 uv venv --python 3.12 .venv
 uv pip install --python ".venv\Scripts\python.exe" -e . pytest
-& ".venv\Scripts\python.exe" -m pytest tests/ -q     # 69 tests
+& ".venv\Scripts\python.exe" -m pytest tests/ -q     # 79 tests
 ```
 
 - **PowerShell, not Bash.** The Bash tool on this machine cannot resolve
   `.venv\Scripts\python.exe`. PowerShell 5.1 has no `&&`/`||` — chain with `;`
   or `if ($?) { }`.
-- **Windows only, and stated rather than implied.** `ctypes.WinDLL`, `conhost`,
+- **Windows only, and stated rather than implied.** `ctypes.WinDLL`,
   console input buffers and `CreateEnvironmentBlock` are the substance here; the
   package raises on import anywhere else. Nothing pretends to be portable.
 - **Stdlib-only, and that is load-bearing.** It is what lets one editable
@@ -83,73 +83,105 @@ are exempt; they never reach a pipe. Pinned by
 | File | Owns |
 |---|---|
 | `__init__.py` | `Session`, `open_session`, and the public surface. The only place that composes spawn → resolve → watch into one call |
-| `session.py` | The conhost spawn, `unfocused_startup`, the focus watchdog, and resolving the real `claude` pid inside the host |
-| `console_input.py` | Everything about typing into another process's console: bracketed paste, waiting for the prompt box, the font, the icon |
+| `session.py` | The spawn — `DEFAULT_LAUNCH`, the rebuilt environment, and `unfocused_startup` for the helpers this module does *not* open on a user's behalf |
+| `console_input.py` | Everything about typing into another process's console: bracketed paste, waiting for the prompt box, reading the screen back |
 | `environment.py` | The environment Windows gives a freshly launched process |
 | `text.py` | `safe_line` and `cap` — making a string safe to submit as a line |
 | `__main__.py` | The CLI, for consumers that are not Python |
 
-`console_input.py` is 660 lines, well past the ~300 this machine's style prefers,
-and stays whole **deliberately**. Its process-global attach lock and its ctypes
-structs are one tightly-bound concern; it was already the riskiest thing to move,
-and splitting it in the same change would have doubled that risk for no gain. If
-it is ever split, the seam is icon/font (which only need a console to *exist*)
-against paste/submit (which need a session reading the buffer).
+`console_input.py` is ~490 lines, past the ~300 this machine's style prefers, and
+stays whole **deliberately**. Its process-global attach lock and its ctypes
+structs are one tightly-bound concern, and it is the riskiest thing here to move.
+It lost ~170 lines when the font and the icon went (invariants 3 and 4), which
+also took the obvious split — those were the only parts that needed a console to
+merely *exist* rather than to be a session reading its buffer. What is left is
+one concern, so leave it alone.
 
 ## Invariants
 
 Break one of these and the failure is silent. Each cost a debugging session, and
 the measurements are in the comments beside the code — do not compress them out.
 
-1. **Nothing this module opens may take focus.** A session is opened
-   mid-thought and mid-sentence; a console that activates itself swallows the
-   next keystrokes into a window nobody was looking at. `spawn_claude` passes
-   `unfocused_startup()` (`STARTF_USESHOWWINDOW` + `SW_SHOWNOACTIVATE`). Nothing
-   needs the focus it would take — `console_input` writes to the console's input
-   buffer, which does not require an active window. Any future spawn gets the
-   same treatment.
+1. **Focus is opt-in, and only a human gesture earns it.** A session opens
+   because someone pressed a button; that window is allowed to come to the
+   front, and it should. What must open nothing at all is a **test** — the
+   suite runs constantly while someone is at the keyboard.
 
-2. **`SW_SHOWNOACTIVATE` is not enough on Windows 11; the host has to be named.**
-   Windows delegates every *new* console to whatever is set as the default
-   terminal application. When that is Windows Terminal, the request is brokered
-   (`svchost` → `OpenConsole.exe`) and **WT creates the window itself**, so the
-   spawner's `STARTUPINFO` never reaches it: a full, activated Terminal window
-   opens regardless of `wShowWindow`. Launching through `conhost.exe` opts out
-   of the delegation, so the window is a classic console whatever the user's
-   setting is. Measured 2026-07-26 from a console-less parent with the default
-   terminal set to Windows Terminal: a direct spawn moved the foreground to
-   `CASCADIA_HOSTING_WINDOW_CLASS` within 400 ms and kept it; the same command
-   through `conhost.exe` left the foreground untouched for the whole run.
+   This replaced a stricter rule on 2026-07-26, and the correction came from
+   the person it was written for: *"It's totally fine if it steals focus for a
+   sec when I ACTUALLY USE THE TOOL. I just spawned up tasks! […] The PROBLEM
+   is when you, Claude, are working on a task and running a whole bunch of
+   tests."* The old rule — nothing this module opens may ever activate — bought
+   a guarantee nobody wanted, and paid for it with the conhost pin below.
 
-   This pins **only** the window this module opens. The user's terminal choice
-   for everything else is theirs, and nothing here depends on it any more —
-   which is what broke the day that setting changed underneath the tracker.
+   **The half that matters is enforced, not remembered.**
+   `tests/test_conventions.py` fails the build if any file but `session.py`
+   names a new-console flag, in any spelling including a string constant.
+   `unfocused_startup` survives for the other half: a window the user did *not*
+   ask for still may not activate, which is what task_tracker's `restart.py`
+   uses it for. `test_a_helper_the_tool_spawns_for_itself_still_gets_no_focus`
+   and `test_the_session_window_is_allowed_to_come_to_the_front` assert the two
+   halves against each other.
 
-3. **Asking is not a guarantee, so the ask is checked.** Even through conhost,
-   two spawns in ten took the foreground anyway (measured 2026-07-26 over ten),
-   apparently depending on how promptly whatever was in front was answering
-   messages — a flake, which is worse than a rule, because it survives testing.
-   `hold_focus` records the foreground *before* the spawn and hands it back if
-   this session's console turns out to be holding it. It hands back only to that
-   window, only when the thief is this console, and only once inside 1.5 s:
-   deliberately clicking the new session is a human gesture and keeps its focus.
-   What gets reversed is focus nobody asked for.
+2. **No console host is named, and the absence is the design.** Windows
+   delegates every *new* console to whatever `HKCU\Console\%%Startup` names.
+   When that is Windows Terminal the request is brokered (`svchost` →
+   `OpenConsole.exe`) and **WT creates the window itself**, so a spawner's
+   `STARTUPINFO` never reaches it. `conhost.exe` used to be prepended to opt
+   out of that.
 
-4. **`open_session` starts the watchdog; a caller must never have to.** This is
-   the reason that function exists rather than a `spawn`/`resolve`/`watch`
-   sequence. It was the consumer's job until 2026-07-26, which meant a second
-   consumer could simply not do it — and invariant 3's failure is two windows in
-   ten, which nobody reads as a missing call. `test_open_session_starts_the_focus_watchdog_itself`
-   pins it. Nothing pinned it before the extraction, because the single call
-   site was stubbed out by the test fixture.
+   **It was removed because conhost cannot draw the session.** conhost accepts
+   only a monospaced face, and **no monospaced font on this machine covers
+   `U+23BF`** — the `⎿` Claude Code puts on every tool result line. Measured
+   2026-07-26 over every installed font via `GlyphTypeface.CharacterToGlyphMap`:
+   exactly three cover it (Noto Sans JP, Noto Serif JP, Segoe UI Symbol) and
+   all three are proportional. There is no font to switch to, so the fix was to
+   stop pinning the host and let the window be the terminal its user actually
+   develops in.
 
-5. **The pid to type into is conhost's child, not the `Popen`.**
-   `AttachConsole` refuses a console host's own pid (measured: false for
-   conhost, true for its child). Hand the wrong one on and the rename, the
-   colour, the prompt and the console font all fail at once and all silently,
-   because every one of them gives up quietly by design. `session_pid` walks the
-   process tree; the first child is right whatever `launch` was, since a wrapper
-   like `pwsh -c claude` shares the console it was given.
+   Everything the delivery path needs survives the move, and that was measured
+   before it was relied on: `AttachConsole` succeeds, `_screen_text()` reads a
+   WT-hosted console's screen back verbatim, and `WriteConsoleInput` reaches
+   the client. What does *not* survive is in invariants 3 and 5.
+
+3. **A session's window cannot wear Claude's icon, and the attempt fails
+   silently.** Under WT, `GetConsoleWindow()` answers a `PseudoConsoleWindow`
+   owned by the client — **not** the visible `CASCADIA_HOSTING_WINDOW_CLASS`
+   window that owns the taskbar button. So `WM_SETICON` through the ordinary
+   attach *succeeds*, against a window nobody sees.
+
+   Sending it to the real Terminal window works at the window level and still
+   does not help: measured 2026-07-26, the icons read back as `claude.exe`'s
+   exactly (`[526089, 328471]` → `[706287053, 665590077]`) and the taskbar
+   button kept drawing Terminal's, because a packaged app's button follows its
+   AUMID manifest. Confirmed by eye — no API reads a taskbar button back.
+
+   This was a working feature under conhost and it is a **knowingly accepted
+   loss**. Do not rebuild it. The need it served — telling Claude windows apart
+   — is met by the session's title, and `SetConsoleTitleW` is measured to push
+   that through to the WT window. The unexplored option is a dedicated WT
+   profile carrying the icon on the *tab*, which needs `wt.exe -w new -p …` and
+   therefore a different way of finding the session's pid.
+
+4. **The console is not dressed at all any more.** `use_font` went with the
+   host pin: WT ignores `SetCurrentConsoleFontEx` outright (measured,
+   `_apply_face` returns False against a WT-hosted console) and needs no help,
+   since it draws every glyph conhost could not. `deliver` therefore starts at
+   the long wait for a prompt box rather than at two attaches.
+
+5. **The pid to type into is the `Popen` itself.** This used to walk the
+   process tree, and had to while conhost sat in the middle: `AttachConsole`
+   refuses a console host's own pid (measured: false for conhost, true for its
+   child). With no host, walking is **actively wrong** — measured 2026-07-26,
+   the first child of a freshly spawned shell was an incidental helper it had
+   started, so the walk returned a pid nothing could be typed into.
+
+   The PowerShell wrapper does not bring the problem back: `powershell.exe`
+   shares the console it was given rather than making one, so attaching to it
+   reaches the same screen buffer `claude` is painting. `DEFAULT_LAUNCH` uses
+   `-NoExit`, so a finished session leaves a usable prompt instead of taking
+   its own scrollback away — and leaves a window behind until it is closed,
+   which is the one thing about this change that is a cost rather than a gain.
 
 6. **A spawned session's environment is rebuilt, never filtered.** `Popen`
    inherits the spawning process's environment, and an app that spawns Claude
@@ -209,58 +241,50 @@ the measurements are in the comments beside the code — do not compress them ou
     strips rather than rejects: odd text should still reach the session, it just
     must not be able to submit a line.
 
-12. **The console is put on a font and an icon that Windows will not supply.**
-    Pinning the host means a classic console, and conhost font-links *some*
-    missing glyphs but not the quadrant blocks `U+2596`–`U+259F` — exactly what
-    Claude Code's logo is drawn from, and Consolas has none of them. Cascadia
-    Mono ships with Windows 11 and has all eight. `_apply_face` reads the face
-    back and reverts if it did not take, because an unknown face is not refused
-    — conhost silently picks something of its own. Separately, a console takes
-    its icon from the image its *host* was launched as, so pinning conhost cost
-    every session the Anthropic logo; `use_icon` puts both `ICON_BIG` and
-    `ICON_SMALL` back via `SendMessageTimeoutW` (not `SendMessageW`, so a wedged
-    console cannot park the delivery thread).
+12. **Resolve through the module at call time, never through an imported name.**
+    `from .session import session_pid` binds the function *object* into the
+    importing namespace, so a test patching `session.session_pid` patches a name
+    the caller never reads — and the real one runs underneath a suite that
+    believes it stubbed it out. That shipped during the extraction itself,
+    against the focus watchdog `open_session` used to start, and two tests
+    caught it. `open_session` therefore calls `_session.foo()`, and the reason
+    is written into the function so nobody "tidies" it back.
 
-    **The pair is extracted once and never destroyed, and it belongs to this
-    process.** `DestroyIcon` on a handle a live window is holding is how an icon
-    goes blank, and every open session is holding this one. The handles also go
-    invalid the moment the process that supplied them exits — measured, and
-    neither `LR_SHARED` nor a module-resource load changes it; `SetConsoleIcon`,
-    which existed for exactly this, is gone from this machine's kernel32. That
-    costs less than it reads: **the taskbar rasterises the icon when it is set
-    and keeps drawing it**, so a button whose handles have since died looks
-    unchanged. Measured 2026-07-26 with two labelled consoles side by side — one
-    iconed by a process that then exited, one whose icon conhost owned — and
-    both drew the logo. What a dead handle costs is a *re-query*: an Explorer
-    restart or a DPI change, after which the button falls back to conhost's.
+## What conhost cost, kept so nobody re-derives it
 
-    If that ever matters, the measured alternative is a shortcut carrying
-    `IconLocation`, handed to conhost as `STARTF_TITLEISLINKNAME`. conhost then
-    loads the icon itself and owns it for the window's whole life — that was the
-    second of those two consoles. It costs `subprocess.Popen`, since Python's
-    `STARTUPINFO` has no `lpTitle`, which is why it was not taken.
+The pin is gone (invariant 2) and so is everything built on it. This section is
+the receipt: each line was bought with a debugging session, and every one of
+them applies again the moment anyone considers pinning a host.
 
-    **Verify an icon by size as well as by pixels.** `ExtractIconExW` returns
-    the *system* large and small metrics, and those are per-process DPI: the
-    tracker runs DPI-aware at 150%, so its sessions wear 48×48 and 24×24 while a
-    DPI-unaware probe extracts 32×32 and 16×16. Comparing across that gap says
-    "neither claude's nor conhost's" about an icon that is exactly claude's, and
-    reads as the feature not working (2026-07-26 — it cost an hour).
-
-    Measured and **did not work**, so nobody spends the afternoon again:
-    `HKCU\Console\UseDx` at 1 and 2 changed the rendering not at all, and `⎿`
-    (`U+23BF`, on every tool result) still draws as a box — under Consolas too,
-    so the font change costs nothing there. No monospace font on the machine has
-    both that and the quadrants.
-
-13. **Resolve through the module at call time, never through an imported name.**
-    `from .session import hold_focus_in_background` binds the function *object*
-    into the importing namespace, so a test patching `session.hold_focus_in_background`
-    patches a name the caller never reads — and the real watchdog runs
-    underneath a suite that believes it stubbed it out. That shipped during the
-    extraction itself and two tests caught it. `open_session` therefore calls
-    `_session.foo()`, and the reason is written into the function so nobody
-    "tidies" it back.
+- **The font.** conhost font-links *some* missing glyphs but not the quadrant
+  blocks `U+2596`–`U+259F` that Claude Code's logo is drawn from, and Consolas
+  has none of them; Cascadia Mono has all eight. `_apply_face` had to read the
+  face back and revert, because an unknown face is not refused — conhost
+  silently picks something of its own.
+- **`HKCU\Console\UseDx` at 1 and 2 changed the rendering not at all**, and `⎿`
+  still drew as a box under both Consolas and Cascadia Mono. That is the defect
+  that finally cost conhost the job.
+- **A console takes its icon from the image its *host* was launched as**, so
+  pinning conhost cost every session the Anthropic logo, and `use_icon` bought
+  it back with `WM_SETICON` for both `ICON_BIG` and `ICON_SMALL` —
+  `SendMessageTimeoutW` rather than `SendMessageW`, so a wedged console could
+  not park the delivery thread.
+- **An icon handle goes invalid the moment the process that supplied it exits**
+  — neither `LR_SHARED` nor a module-resource load changes that, and
+  `SetConsoleIcon`, which existed for exactly this, is gone from this machine's
+  kernel32. It cost less than it read: the taskbar rasterises an icon when it is
+  set and keeps drawing it, measured with two labelled consoles side by side.
+  A dead handle costs only a *re-query* — an Explorer restart or a DPI change.
+- **The alternative that owned its handle properly** was a shortcut carrying
+  `IconLocation`, handed to conhost as `STARTF_TITLEISLINKNAME`. It costs
+  `subprocess.Popen`, since Python's `STARTUPINFO` has no `lpTitle`.
+- **Verify an icon by size as well as by pixels.** `ExtractIconExW` returns the
+  *system* large and small metrics, and those are per-process DPI: a DPI-aware
+  tracker at 150% wears 48×48 and 24×24 while a DPI-unaware probe extracts
+  32×32 and 16×16. Comparing across that gap says "neither claude's nor
+  conhost's" about an icon that is exactly claude's, and reads as the feature
+  not working (2026-07-26 — it cost an hour). **This one is not about conhost
+  at all** and applies to any icon comparison on this machine.
 
 ## Adding a feature
 
@@ -291,14 +315,14 @@ the measurements are in the comments beside the code — do not compress them ou
 - **`_attached` frees the calling process's console in order to attach
   elsewhere** — and under pytest that is pytest's own. `test_console_input.py`'s
   autouse fixture refuses every attach by default; a test that wants one opts in
-  by patching over it. `use_font` unattached is worse still: `CONOUT$` is then
-  the *user's* terminal, and it is the one that would change font.
-- Mock at the boundary: `_write_input`, `_screen_text`, `_apply_face`,
-  `_apply_icon` — never `subprocess.Popen` for the typing paths.
+  by patching over it. An unattached call is worse than a failed one: `CONOUT$`
+  is then the *user's* terminal rather than the session's.
+- Mock at the boundary: `_write_input` and `_screen_text` — never
+  `subprocess.Popen` for the typing paths.
 - **Deliberately untested:** that a real Claude session reads what is typed.
   That was verified by hand against a live session on 2026-07-25 and is what
   produced invariant 8; automating it means spawning a window on the user's
-  desktop, which invariant 1 exists to prevent.
+  desktop, which is exactly what invariant 1 forbids a *test* to do.
 
 ## Parallel work
 

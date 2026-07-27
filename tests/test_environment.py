@@ -71,9 +71,13 @@ def test_the_launch_executable_is_still_resolvable_on_the_rebuilt_path():
     # working.
     env = upper_keys(environment.login_environment())
     directories = [d for d in env["PATH"].split(os.pathsep) if d]
+    # DEFAULT_LAUNCH names the shell with its extension; a `launch` override
+    # may well not. Both spellings have to resolve to the same file here.
     executable = session.DEFAULT_LAUNCH[0]
+    if not executable.lower().endswith(".exe"):
+        executable += ".exe"
 
-    assert any((Path(directory) / f"{executable}.exe").is_file()
+    assert any((Path(directory) / executable).is_file()
                for directory in directories), (
         f"{executable} is not on the rebuilt PATH, so opening a session would fail")
 

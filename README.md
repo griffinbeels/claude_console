@@ -1,11 +1,10 @@
 # claude_console
 
-Open a visible Claude Code session on Windows, type a prompt into it, and never
-take the keyboard.
+Open a visible Claude Code session on Windows and type a prompt into it.
 
-**Windows only.** Not "mostly portable" — `conhost.exe`, console input buffers
-and `CreateEnvironmentBlock` are the whole substance of this module, and it
-raises on import anywhere else. Nothing in it pretends otherwise.
+**Windows only.** Not "mostly portable" — the default-terminal handoff, console
+input buffers and `CreateEnvironmentBlock` are the whole substance of this
+module, and it raises on import anywhere else. Nothing in it pretends otherwise.
 
 ```python
 import claude_console
@@ -25,36 +24,34 @@ Every non-obvious line here was bought with a debugging session, and the
 comments carry the measurements rather than the conclusions. The four that
 matter most, because each of them fails *silently*:
 
-- **Sessions are launched through `conhost.exe`, not directly.** Windows hands
-  every new console to whatever the machine-wide "default terminal application"
-  setting names. When that is Windows Terminal, WT creates the window itself,
-  so the spawner's `STARTUPINFO` never reaches it and `SW_SHOWNOACTIVATE` is
-  discarded. Measured 2026-07-26 from a console-less parent: a direct spawn
-  moved the foreground to `CASCADIA_HOSTING_WINDOW_CLASS` within 400 ms and
-  kept it; the same command through `conhost.exe` left the foreground untouched
-  for the whole run. Naming the host opts out of the delegation, and leaves the
-  user's terminal choice alone for everything else on the machine.
-- **`SW_SHOWNOACTIVATE`, and a watchdog because asking is not enough.** Measured
-  over ten spawns, two took the foreground anyway. `hold_focus` watches for
-  ~1.5 s and hands the keyboard back — but only to the window that had it
-  before, only when the thief is this session's console, and only once. It is
-  short on purpose: past that the window belongs to the user, and deliberately
-  clicking it is a human gesture that earns the focus it asks for.
-- **Typing goes into the console's input buffer, which needs no focus.** That
-  is what makes prompt delivery possible without stealing the keyboard, and it
-  is why nothing in here ever calls `SetForegroundWindow` except to give focus
-  *back*.
-- **The pid you can type into is not the pid `Popen` gives you.** `spawn_claude`
-  starts conhost; conhost starts Claude. `AttachConsole` refuses a console
-  host's own pid, so `session_pid` walks the process tree for the child. Get it
-  wrong and the rename, the colour, the prompt and the console font all fail at
-  once and all quietly.
-- **Pinning the host costs the window its icon, and `use_icon` buys it back.**
-  A console takes its icon from the image its *host* was launched as, so
-  `conhost.exe claude …` wears conhost's icon — measured byte-for-byte. Both
-  `ICON_BIG` (taskbar, Alt+Tab) and `ICON_SMALL` (title bar) are set, through
-  the attach the module already performs, with `SendMessageTimeoutW` rather
-  than `SendMessageW` so a wedged console cannot park the delivery thread.
+- **The window belongs to the machine's default terminal, and that is
+  deliberate.** Windows hands every new console to whatever the machine-wide
+  "default terminal application" setting names — here, Windows Terminal.
+  Nothing is prepended to the launch command to opt out of that. `conhost.exe`
+  used to be, and it cost the session every glyph conhost cannot draw:
+  **no monospaced font on this machine covers `U+23BF`**, the `⎿` Claude Code
+  puts on every tool result line. Measured 2026-07-26 across every installed
+  font — exactly three cover it and all three are proportional, which conhost
+  cannot use.
+- **Focus is opt-in, and a human gesture earns it.** A session opens because
+  someone pressed a button, so its window may come to the front. What must open
+  nothing at all is a *test*, and that is enforced rather than remembered:
+  `tests/test_conventions.py` fails the build if any file but `session.py` asks
+  for a new console in any spelling. This is the whole of the focus rule now —
+  the `conhost` pin and the `hold_focus` watchdog that used to enforce a
+  stricter version are gone.
+- **Typing goes into the console's input buffer, which needs no focus.** True
+  under Windows Terminal as well: measured 2026-07-26 against a WT-hosted
+  console, `WriteConsoleInput` reaches the client and the screen buffer reads
+  back verbatim. That is what lets a prompt be delivered to a window you are
+  not looking at.
+- **The session cannot wear Claude's icon, and the failure is silent.** Under
+  WT, `GetConsoleWindow()` answers a `PseudoConsoleWindow` owned by the client,
+  not the visible window that owns the taskbar button — so `WM_SETICON`
+  *succeeds* against a window nobody sees. Sending it to the real Terminal
+  window does change that window's icon and the taskbar still draws Terminal's,
+  because a packaged app's button follows its AUMID manifest. Don't rebuild
+  this; it was measured and it does not work.
 
 `console_input` carries four more of the same kind — bracketed paste, waiting
 for the prompt box, waiting for the *screen* rather than the clock between
@@ -171,21 +168,21 @@ because the tempting mistakes are all in this list:
 
 | Call | Does |
 |---|---|
-| `open_session(cwd, launch=None)` | Spawn, resolve the inner pid, start the focus watchdog. Returns `Session` |
+| `open_session(cwd, launch=None)` | Spawn a session and resolve its pid. Returns `Session` |
 | `Session.deliver(prompt, commands)` | Submit each command, then leave the prompt typed and unsent. Background |
 | `Session.deliver_now(prompt, commands)` | The same, on this thread, for a caller about to exit |
-| `Session.window()` | The console's `HWND`, or 0 |
-| `Session.pid` / `.host` | The session inside the console / the host `Popen` |
+| `Session.window()` | The console's `HWND`, or 0. Under Windows Terminal this is the *pseudo*-console window, not the visible one |
+| `Session.pid` / `.host` | The session's pid / the `Popen` behind it — the same process |
 
-The watchdog is started by `open_session` rather than left to the caller on
-purpose: "nothing this opens may take the keyboard" is easy to state and easy
-to forget, so there is no way to obtain a `Session` without it running.
+`launch` defaults to `claude` running inside `powershell.exe -NoExit`, so when
+Claude exits you are left at a PowerShell prompt in the session's directory
+rather than watching the window and its scrollback disappear. An override
+replaces the whole argv, wrapper included.
 
 Lower-level, all public: `spawn_claude`, `session_pid`, `unfocused_startup`
-(useful for spawning anything unfocused, console or not), `foreground_window`,
-`hold_focus`, `hold_focus_in_background`, `claude_environment`,
-`login_environment`, `safe_line`, `cap`, `use_font`, and the `console_input`
-and `environment` submodules.
+(for spawning something the user did *not* ask for — a window like that still
+may not activate), `claude_environment`, `login_environment`, `safe_line`,
+`cap`, and the `console_input` and `environment` submodules.
 
 ## Tests
 
@@ -203,7 +200,8 @@ called — and that console is windowless (`CREATE_NO_WINDOW`, which is still a
 work against it). `tests/test_conventions.py` fails the build if anything else
 asks for `CREATE_NEW_CONSOLE`, in any spelling.
 
-The focus behaviour is pinned by: `test_the_session_is_launched_through_a_console_host_this_app_controls`,
-`test_the_new_console_opens_without_taking_focus`, the three `hold_focus` cases,
-`test_open_session_starts_the_focus_watchdog_itself`, and
-`test_the_window_watched_is_the_one_that_had_focus_before_the_spawn`.
+The focus behaviour is pinned by
+`test_nothing_but_the_session_itself_may_open_a_console_window` (the guard that
+matters), plus `test_the_session_window_is_allowed_to_come_to_the_front` and
+`test_a_helper_the_tool_spawns_for_itself_still_gets_no_focus` — the two halves
+of "focus is opt-in", asserted against each other so neither can drift.

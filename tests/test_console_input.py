@@ -27,18 +27,10 @@ def no_test_reaches_a_real_console(monkeypatch):
 
     `_attached` frees the calling process's console in order to attach
     elsewhere — and the calling process here is pytest, so a call that slips
-    through takes pytest's own console with it. `use_font` is worse again:
-    with nothing attached, `CONOUT$` is the *user's* terminal, and it would
-    be the one that changed font. Tests that want a console opt in by
-    patching over this.
+    through takes pytest's own console with it. Tests that want a console opt
+    in by patching over this.
     """
     monkeypatch.setattr(console_input, "_attached", lambda pid: NoConsole())
-    monkeypatch.setattr(console_input, "FONT_TIMEOUT", 0)
-    # Without this every test that calls `deliver` spends ICON_TIMEOUT seconds
-    # retrying an attach the fixture above has already refused — a busy loop,
-    # since POLL_SECONDS is 0 here. It cost the suite a minute before it was
-    # noticed, which is the only symptom a missing timeout has.
-    monkeypatch.setattr(console_input, "ICON_TIMEOUT", 0)
     monkeypatch.setattr(console_input, "POLL_SECONDS", 0)
 
 
@@ -327,18 +319,6 @@ class FakeSession:
         self.writes_at_most = writes_at_most
         self.writes = []
         self.boxes = []
-        self.font = None
-        self.icon = None
-
-    def apply_face(self, face):
-        # Recorded with the number of writes so far, so a test can say not
-        # just that the face was set but that it was set before any typing.
-        self.font = (face, len(self.writes))
-        return True
-
-    def apply_icon(self, icons):
-        self.icon = (icons, len(self.writes))
-        return True
 
     def write(self, text):
         # Stands in for _write_input, so it answers in the same currency:
@@ -367,20 +347,12 @@ class FakeSession:
                 "  ⏵⏵ bypass permissions on (shift+tab to cycle)")
 
 
-# Stands in for the pair of handles ExtractIconExW hands back, so a session's
-# icon can be asserted on a machine whatever it has installed.
-FAKE_ICONS = (11, 22)
-
-
 def live_session(monkeypatch, **behaviour):
     session = FakeSession(**behaviour)
     monkeypatch.setattr(console_input, "ECHO_TIMEOUT", 0.05)
     monkeypatch.setattr(console_input, "ECHO_POLL", 0)
     monkeypatch.setattr(console_input, "_write_input", session.write)
     monkeypatch.setattr(console_input, "_screen_text", session.screen)
-    monkeypatch.setattr(console_input, "_apply_face", session.apply_face)
-    monkeypatch.setattr(console_input, "_apply_icon", session.apply_icon)
-    monkeypatch.setattr(console_input, "session_icons", lambda: FAKE_ICONS)
     monkeypatch.setattr(console_input, "_attached", lambda pid: FakeAttach())
     return session
 
@@ -438,26 +410,6 @@ def test_a_command_that_never_submits_is_cleared_before_the_prompt(monkeypatch):
         console_input.PASTE_START + "BUG: body" + console_input.PASTE_END,
     ]
 
-
-def test_the_console_font_is_set_before_anything_is_typed(monkeypatch):
-    # The logo is painted the moment the session starts, in whatever face the
-    # console came up in — Consolas, which has none of the block elements it
-    # is drawn from. The face has to be swapped before the wait for a prompt
-    # box, not after it: a session that never becomes ready still has a logo.
-    session = live_session(monkeypatch)
-
-    console_input.deliver(7, ["/color red"], "BUG: body")
-
-    assert session.font == (console_input.SESSION_FACE, 0)
-
-
-def test_the_font_is_given_up_on_if_the_console_never_appears(monkeypatch):
-    # The console does not exist for the moments after Popen returns, so the
-    # attach is retried — but a session that never gets one must not hold the
-    # hand-off's thread open waiting for it.
-    assert console_input.use_font(7, timeout=0.05) is False
-
-
 def test_an_empty_line_is_never_submitted(monkeypatch):
     # Without the guard this writes empty paste markers and then presses
     # Enter, submitting a blank prompt to the session — the same reason paste()
@@ -496,85 +448,3 @@ def test_a_paste_that_landed_nothing_writes_no_stray_terminator(monkeypatch):
     assert session.writes == [
         console_input.PASTE_START + "BUG: body" + console_input.PASTE_END,
     ]
-
-
-def test_the_console_wears_the_session_icon_before_anything_is_typed(monkeypatch):
-    # The taskbar button exists from the moment the window does, and it is what
-    # tells a Claude session apart from every other console on the machine. A
-    # session opened with nothing selected gets one too, which is why this goes
-    # in deliver beside the font rather than anywhere near the typing.
-    session = live_session(monkeypatch)
-
-    console_input.deliver(7, ["/color red"], "BUG: body")
-
-    assert session.icon == (FAKE_ICONS, 0)
-
-
-def test_the_icon_is_given_up_on_if_the_console_never_appears(monkeypatch):
-    # Same shape as the font: the console does not exist for the moments after
-    # Popen returns, so the attach is retried — but a session that never gets
-    # one must not hold the hand-off's thread open waiting for it.
-    monkeypatch.setattr(console_input, "session_icons", lambda: FAKE_ICONS)
-
-    assert console_input.use_icon(7, timeout=0.05) is False
-
-
-def test_a_machine_with_no_claude_on_path_simply_wears_no_icon(monkeypatch):
-    # Nothing to extract an icon from is not a failure worth retrying, and not
-    # one worth attaching to a console to discover.
-    attached = []
-    monkeypatch.setattr(console_input, "_icons", None)
-    monkeypatch.setattr(console_input.shutil, "which", lambda image: None)
-    monkeypatch.setattr(console_input, "_attached",
-                        lambda pid: attached.append(pid) or NoConsole())
-
-    assert console_input.session_icons() == (0, 0)
-    assert console_input.use_icon(7) is False
-    assert attached == []
-
-
-def test_the_icons_are_extracted_once_and_kept(monkeypatch):
-    """One pair of handles serves every session, and nothing ever destroys them.
-
-    `DestroyIcon` on a handle a live window is holding is how an icon goes
-    blank, and every open session is holding this one — so the pair is
-    extracted once and kept for the life of the process. Any executable with
-    icons proves the extraction; this one uses the interpreter running the
-    suite, so the test says nothing about what is installed on the machine.
-    """
-    asked = []
-    monkeypatch.setattr(console_input, "_icons", None)
-    monkeypatch.setattr(console_input.shutil, "which",
-                        lambda image: asked.append(image) or sys.executable)
-
-    first = console_input.session_icons()
-    second = console_input.session_icons()
-
-    assert all(first), "both a large and a small icon come out of an executable"
-    assert first == second
-    assert asked == [console_input.SESSION_IMAGE]
-
-
-def test_both_the_taskbar_and_the_title_bar_icon_are_set(monkeypatch):
-    # ICON_BIG is what the taskbar and Alt+Tab draw, ICON_SMALL the title bar.
-    # Set one and the other keeps falling back to conhost's class icon, which
-    # reads as the change half-working.
-    sent = []
-    monkeypatch.setattr(console_input.kernel32, "GetConsoleWindow", lambda: 4321)
-    monkeypatch.setattr(
-        console_input.user32, "SendMessageTimeoutW",
-        lambda window, message, kind, icon, flags, timeout, answer:
-            sent.append((window, message, kind, icon)) or 1)
-
-    assert console_input._apply_icon(FAKE_ICONS) is True
-    assert sent == [(4321, console_input.WM_SETICON, console_input.ICON_BIG, 11),
-                    (4321, console_input.WM_SETICON, console_input.ICON_SMALL, 22)]
-
-
-def test_a_console_without_a_window_yet_is_a_retry_not_a_crash(monkeypatch):
-    # GetConsoleWindow answers 0 both before the window exists and for a
-    # console that will never have one — CREATE_NO_WINDOW allocates a real
-    # console with no window at all (measured). Neither is an error here.
-    monkeypatch.setattr(console_input.kernel32, "GetConsoleWindow", lambda: 0)
-
-    assert console_input._apply_icon(FAKE_ICONS) is False

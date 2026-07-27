@@ -40,7 +40,7 @@ def _read_prompt(source: str | None) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m claude_console",
-        description="Open a visible Claude Code session that does not take focus.")
+        description="Open a visible Claude Code session and type a prompt into it.")
     parser.add_argument("--cwd", required=True,
                         help="working directory to open the session in")
     parser.add_argument("--prompt-file", metavar="PATH",
