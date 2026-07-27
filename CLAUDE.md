@@ -221,6 +221,32 @@ the measurements are in the comments beside the code — do not compress them ou
     `ICON_SMALL` back via `SendMessageTimeoutW` (not `SendMessageW`, so a wedged
     console cannot park the delivery thread).
 
+    **The pair is extracted once and never destroyed, and it belongs to this
+    process.** `DestroyIcon` on a handle a live window is holding is how an icon
+    goes blank, and every open session is holding this one. The handles also go
+    invalid the moment the process that supplied them exits — measured, and
+    neither `LR_SHARED` nor a module-resource load changes it; `SetConsoleIcon`,
+    which existed for exactly this, is gone from this machine's kernel32. That
+    costs less than it reads: **the taskbar rasterises the icon when it is set
+    and keeps drawing it**, so a button whose handles have since died looks
+    unchanged. Measured 2026-07-26 with two labelled consoles side by side — one
+    iconed by a process that then exited, one whose icon conhost owned — and
+    both drew the logo. What a dead handle costs is a *re-query*: an Explorer
+    restart or a DPI change, after which the button falls back to conhost's.
+
+    If that ever matters, the measured alternative is a shortcut carrying
+    `IconLocation`, handed to conhost as `STARTF_TITLEISLINKNAME`. conhost then
+    loads the icon itself and owns it for the window's whole life — that was the
+    second of those two consoles. It costs `subprocess.Popen`, since Python's
+    `STARTUPINFO` has no `lpTitle`, which is why it was not taken.
+
+    **Verify an icon by size as well as by pixels.** `ExtractIconExW` returns
+    the *system* large and small metrics, and those are per-process DPI: the
+    tracker runs DPI-aware at 150%, so its sessions wear 48×48 and 24×24 while a
+    DPI-unaware probe extracts 32×32 and 16×16. Comparing across that gap says
+    "neither claude's nor conhost's" about an icon that is exactly claude's, and
+    reads as the feature not working (2026-07-26 — it cost an hour).
+
     Measured and **did not work**, so nobody spends the afternoon again:
     `HKCU\Console\UseDx` at 1 and 2 changed the rendering not at all, and `⎿`
     (`U+23BF`, on every tool result) still draws as a box — under Consolas too,
