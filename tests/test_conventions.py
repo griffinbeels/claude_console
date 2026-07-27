@@ -93,8 +93,8 @@ def test_nothing_but_the_session_itself_may_open_a_console_window():
 def test_the_package_has_no_third_party_dependencies():
     """Stdlib-only is what lets one copy serve every consumer on this machine.
 
-    task_tracker imports this from a Python 3.12 venv; game-learnings reaches
-    it through whatever bare `python` its Node tooling finds, which here is a
+    task_tracker imports this from a Python 3.12 venv; a Node-based consumer
+    reaches it through whatever bare `python` its tooling finds, which here is a
     3.14 with nothing installed in it. A single third-party import would mean
     every consumer has to provision an environment before it can open a
     window, and the README's "install it and import it" stops being true.

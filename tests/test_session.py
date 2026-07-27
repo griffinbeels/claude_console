@@ -45,10 +45,10 @@ def test_spawn_uses_a_new_console_in_the_given_directory(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    session.spawn_claude(Path("C:/repos/sm64_tracker"))
+    session.spawn_claude(Path("C:/repos/a_consumer"))
 
     assert captured["args"] == session.DEFAULT_LAUNCH
-    assert captured["kwargs"]["cwd"] == Path("C:/repos/sm64_tracker")
+    assert captured["kwargs"]["cwd"] == Path("C:/repos/a_consumer")
     assert captured["kwargs"]["creationflags"] == session.NEW_CONSOLE
 
 

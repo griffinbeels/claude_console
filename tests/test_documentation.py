@@ -52,6 +52,32 @@ def test_no_tracked_file_carries_a_home_directory_path():
         + "\n  ".join(offenders))
 
 
+# Other projects on this machine. A repository that is not one of them has no
+# reason to name one, and they arrive the same way every time: as the example in
+# a test fixture or a comment, written while looking at whatever was on screen.
+# `task_tracker` is deliberately absent — it is a declared consumer here.
+FOREIGN_PROJECTS = ("sm64_tracker", "MARELO", "grime-to-five", "game-learnings")
+
+
+def test_no_tracked_file_names_another_project_on_this_machine():
+    offenders = []
+    for relative in _tracked_files():
+        if relative == f"tests/{Path(__file__).name}":
+            continue
+        try:
+            text = (REPO / relative).read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for number, line in enumerate(text.splitlines(), start=1):
+            for project in FOREIGN_PROJECTS:
+                if project in line:
+                    offenders.append(f"{relative}:{number}: {line.strip()[:90]}")
+
+    assert not offenders, (
+        "another project on this machine is named in a public repository — use "
+        "a neutral example instead:\n  " + "\n  ".join(offenders))
+
+
 def test_the_consumer_hook_points_at_a_script_that_exists():
     """The hook is what stops a change here breaking a consumer silently.
 

@@ -90,7 +90,7 @@ are exempt; they never reach a pipe. Pinned by
 | Consumer | Uses | Verified by the hook |
 |---|---|---|
 | `task_tracker` (a sibling checkout; see `consumers.json`) | `open_session` (with `name=`), `Session.deliver` (with `on_finish=`), `console_input.Delivery`, `safe_line`, `cap`, `unfocused_startup`, `console_input.PASTE_END` | yes — `consumers.json` |
-| `game-learnings` | not yet a consumer; add the row when it lands | — |
+| a Node-based project reaching Python through `__main__.py` | not yet a consumer; add the row when it lands | — |
 
 ## Layout
 
