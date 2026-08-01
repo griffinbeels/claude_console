@@ -64,6 +64,11 @@ CLEAR_LINE = "\x15"
 # the clipboard copy is still there.
 READY_MARKERS = ("shift+tab to cycle", "for shortcuts")
 
+# How a row that carries typed text opens. ">" is the classic bordered box;
+# "❯" (U+276F) is the fullscreen TUI, added 2026-08-01 after a live session
+# read back `'❯\xa0…'` — see `prompt_box`.
+BOX_MARKERS = (">", "❯")
+
 # Three minutes, and the length is the point. This was 45 s, which read as
 # generous and was in fact a data-loss deadline: a session is "not ready" for
 # every second a startup dialog is on screen, and the workspace-trust question
@@ -319,10 +324,11 @@ def prompt_box(screen: str) -> str:
     """What is currently typed in the session's prompt box.
 
     The box is drawn below the transcript and above the status line, and its
-    first row is the last row on screen that starts with ">" — every earlier
-    one is a message already sent, and everything below it is indented status.
-    A long entry wraps onto rows that carry no marker, so this reads the start
-    of what is typed, which is all any caller needs to recognise its own line.
+    first row is the last row on screen that opens with a prompt marker —
+    every earlier one is a message already sent, and everything below it is
+    indented status. A long entry wraps onto rows that carry no marker, so
+    this reads the start of what is typed, which is all any caller needs to
+    recognise its own line.
 
     Reading the box is how a write is *confirmed*: text that has reached it has
     been consumed from the console input buffer, which is the only evidence
@@ -330,10 +336,21 @@ def prompt_box(screen: str) -> str:
     into this one. Like `is_ready`, this is a guess about someone else's UI, so
     it fails the same safe way — an unrecognised layout reads as an empty box,
     every wait times out, and the clipboard copy is still there.
+
+    **The marker is not only ">".** Claude Code's fullscreen TUI
+    (`"tui": "fullscreen"`) draws both sent messages and the input box with
+    "❯" and a non-breaking space, inside horizontal rules rather than a
+    bordered panel. Measured 2026-08-01 against a live 2.1.220 session: the box
+    row read `'❯\\xa0ZZPROBEZZ'` while this function returned `''`, so every
+    `submit` and every `paste` into a fullscreen window would have failed its
+    own confirmation and been retried to death — silently, because failing
+    safe here means falling back to the clipboard. Matching both markers costs
+    nothing and keeps the classic layout working exactly as before.
     """
     for row in reversed(screen.split("\n")):
-        if row.startswith(">"):
-            return row[1:].strip()
+        for marker in BOX_MARKERS:
+            if row.startswith(marker):
+                return row[len(marker):].strip()
     return ""
 
 

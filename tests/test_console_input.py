@@ -300,6 +300,41 @@ def test_the_empty_capture_is_a_session_that_is_accepting_input():
     assert console_input.is_ready(EMPTY_SCREEN)
 
 
+# The SAME layout under `"tui": "fullscreen"`, captured 2026-08-01 by writing
+# a probe string into a live 2.1.220 session and reading the screen back. It
+# draws "❯" and a NON-BREAKING space where the classic box draws "> ", for the
+# sent message as well as for the box. Until that day `prompt_box` matched
+# only ">", so it returned "" for every fullscreen window — which is not a
+# visible break but a silent one: `submit` never sees its own echo, retries to
+# exhaustion, and reports the command as undeliverable.
+FULLSCREEN_SCREEN = (
+    "❯\xa0We probably should have a hook literally type rename and color\n"
+    "─" * 60 + "\n"
+    "❯\xa0/color blue\n"
+    + "─" * 60 + "\n"
+    "  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← 1 agent\n"
+)
+
+FULLSCREEN_EMPTY = FULLSCREEN_SCREEN.replace("❯\xa0/color blue", "❯\xa0")
+
+
+def test_the_fullscreen_tui_marker_is_read_as_a_prompt_box():
+    assert console_input.prompt_box(FULLSCREEN_SCREEN) == "/color blue"
+
+
+def test_an_empty_fullscreen_box_reads_as_empty_not_as_the_message_above_it():
+    # The nbsp must strip, and the sent message one row up must not be
+    # mistaken for typed text — otherwise `submit` would never see its line
+    # leave the box and every command after the first would be abandoned.
+    assert console_input.prompt_box(FULLSCREEN_EMPTY) == ""
+
+
+def test_the_classic_marker_still_wins_where_it_is_the_one_drawn():
+    # Additive, not a replacement: the bordered layout every delivery in the
+    # log so far was typed into keeps behaving exactly as it did.
+    assert console_input.prompt_box(LIVE_SCREEN) == "/color green"
+
+
 class FakeSession:
     """A console that answers writes the way a live session was measured to.
 
