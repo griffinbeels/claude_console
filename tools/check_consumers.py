@@ -15,6 +15,7 @@ cries wolf there would be turned off within a day.
 """
 
 import json
+import argparse
 import subprocess
 import sys
 from pathlib import Path
@@ -37,9 +38,23 @@ def run_one(consumer: dict) -> tuple[str, str]:
     # a public repo. `Path / absolute` returns the absolute one, so an entry
     # that still spells a full path keeps working.
     root = (REPO / consumer["path"]).resolve()
+    if not root.is_dir():
+        for alternate in consumer.get("alternate_paths", []):
+            candidate = (REPO / alternate).resolve()
+            if candidate.is_dir():
+                root = candidate
+                break
     interpreter = root / consumer["python"]
     if not root.is_dir():
         return "skip", f"no checkout at {root}"
+    if not interpreter.is_file():
+        # Standard venv layout differs by OS. Keep explicit custom runtimes,
+        # but recognise the counterpart of the registered conventional path.
+        relative = Path(consumer["python"])
+        if relative.as_posix().endswith("/Scripts/python.exe"):
+            interpreter = root / relative.parent.parent / "bin" / "python"
+        elif relative.as_posix().endswith("/bin/python"):
+            interpreter = root / relative.parent.parent / "Scripts" / "python.exe"
     if not interpreter.is_file():
         # ASCII only in printed output: Python writes stderr in the system
         # codepage on Windows (cp1252), and this text can end up in front of
@@ -64,9 +79,25 @@ def run_one(consumer: dict) -> tuple[str, str]:
     return "fail", (finished.stdout + finished.stderr).strip()
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--consumer", action="append", default=[], metavar="NAME=PATH",
+                        help="verify an explicitly paired consumer worktree")
+    args = parser.parse_args(argv)
+    overrides = {}
+    for value in args.consumer:
+        name, separator, path = value.partition("=")
+        if not separator or not name or not path:
+            parser.error("--consumer must be NAME=PATH")
+        overrides[name] = path
+    registered = consumers()
+    unknown = set(overrides) - {consumer["name"] for consumer in registered}
+    if unknown:
+        parser.error("unknown consumer: " + ", ".join(sorted(unknown)))
     failures = []
-    for consumer in consumers():
+    for consumer in registered:
+        if consumer["name"] in overrides:
+            consumer = {**consumer, "path": overrides[consumer["name"]], "alternate_paths": []}
         try:
             status, detail = run_one(consumer)
         except subprocess.TimeoutExpired:

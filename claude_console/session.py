@@ -10,10 +10,13 @@ which does the attaching.
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 from . import environment
 from .text import cap, safe_argument
+
+_PLATFORM = sys.platform
 
 NEW_CONSOLE = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
 
@@ -35,6 +38,7 @@ DEFAULT_LAUNCH = [
     "powershell.exe", "-NoExit", "-Command",
     "claude --dangerously-skip-permissions",
 ]
+WINDOWS_DEFAULT_LAUNCH = DEFAULT_LAUNCH
 
 # Nothing is prepended to that command, and the absence is the design.
 #
@@ -127,6 +131,9 @@ def default_launch(name: str = "") -> list[str]:
     The name is cleaned and quoted here rather than by the caller, so no
     consumer can get either wrong — see `display_name` and `powershell_quote`.
     """
+    if _PLATFORM == "darwin":
+        from .macos import default_launch as mac_launch
+        return mac_launch(name)
     named = display_name(name)
     if not named:
         return list(DEFAULT_LAUNCH)
@@ -141,6 +148,8 @@ def unfocused_startup() -> "subprocess.STARTUPINFO":
     machine spawns for itself, not only to a Claude session — task_tracker's
     `restart.py` relaunches the tracker through it and opens no console at all.
     """
+    if _PLATFORM != "win32":
+        return None
     startup = subprocess.STARTUPINFO()
     startup.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     startup.wShowWindow = SW_SHOWNOACTIVATE
@@ -175,6 +184,11 @@ def spawn_claude(cwd: Path, launch: list[str] | None = None,
     Returns the session's own process — the pid to type into. Callers should
     still prefer `claude_console.open_session`, which is the composed call.
     """
+    if _PLATFORM == "darwin":
+        from .macos import spawn_claude as mac_spawn
+        return mac_spawn(cwd, launch, name)
+    if _PLATFORM != "win32":
+        raise OSError(f"Claude console does not support {sys.platform}")
     return subprocess.Popen(
         launch or default_launch(name),
         cwd=Path(cwd),
@@ -203,3 +217,7 @@ def session_pid(host: subprocess.Popen) -> int:
     obvious way to ask.
     """
     return host.pid
+
+
+if _PLATFORM == "darwin":
+    DEFAULT_LAUNCH = default_launch()

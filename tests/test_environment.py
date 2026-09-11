@@ -8,11 +8,16 @@ would only assert that the mock was called.
 import ctypes
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from claude_console import environment, session
+import pytest
+
+windows_native = pytest.mark.skipif(sys.platform != "win32", reason="Native Windows environment")
 
 
+@windows_native
 def test_the_block_is_walked_by_utf16_code_units_not_characters():
     """A variable holding an emoji must not desync everything after it.
 
@@ -46,6 +51,7 @@ def test_a_variable_set_only_in_this_process_does_not_reach_the_session(monkeypa
     assert "SPAWNER_ONLY_VAR" not in upper_keys(environment.login_environment())
 
 
+@windows_native
 def test_the_baseline_still_carries_the_real_user_environment():
     env = upper_keys(environment.login_environment())
 
@@ -55,6 +61,7 @@ def test_the_baseline_still_carries_the_real_user_environment():
         assert env.get(name), f"{name} missing from the rebuilt environment"
 
 
+@windows_native
 def test_identity_vars_windows_omits_from_the_block_are_restored():
     # CreateEnvironmentBlock leaves USERNAME/USERDOMAIN out of the block it
     # builds from a process token, but a real console has them.
@@ -65,6 +72,7 @@ def test_identity_vars_windows_omits_from_the_block_are_restored():
             assert env.get(name.upper()) == os.environ[name]
 
 
+@windows_native
 def test_the_launch_executable_is_still_resolvable_on_the_rebuilt_path():
     # The one way this approach could fail outright: rebuilding PATH from the
     # registry drops wherever `claude` lives, and opening a session stops
@@ -118,6 +126,7 @@ def test_the_session_is_not_told_to_force_transcript_persistence():
         session.claude_environment())
 
 
+@windows_native
 def test_spawn_hands_the_rebuilt_environment_to_the_process(monkeypatch):
     captured = {}
     monkeypatch.setenv("SPAWNER_ONLY_VAR", "set by the app doing the spawning")

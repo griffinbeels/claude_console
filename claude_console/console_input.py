@@ -41,6 +41,7 @@ caller *before* calling in here.
 """
 
 import ctypes
+import sys
 import threading
 import time
 from contextlib import contextmanager
@@ -49,7 +50,7 @@ from dataclasses import dataclass
 
 from . import journal
 
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True) if sys.platform == "win32" else None
 
 PASTE_START = "\x1b[200~"
 PASTE_END = "\x1b[201~"
@@ -202,8 +203,9 @@ class CONSOLE_SCREEN_BUFFER_INFO(ctypes.Structure):
                 ("dwMaximumWindowSize", COORD)]
 
 
-kernel32.CreateFileW.restype = wintypes.HANDLE
-kernel32.AttachConsole.argtypes = [wintypes.DWORD]
+if kernel32 is not None:
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.AttachConsole.argtypes = [wintypes.DWORD]
 
 def utf16_code_units(text: str) -> list[int]:
     """The text as Windows counts it: UTF-16 code units, not Python characters.
@@ -246,6 +248,13 @@ def key_records(text: str) -> ctypes.Array:
 def _attached(pid: int):
     """Borrow another process's console for the body of the `with`."""
     with _attachment:
+        if sys.platform == "darwin":
+            from . import macos
+            yield macos.attached(pid)
+            return
+        if kernel32 is None:
+            yield False
+            return
         if not kernel32.AttachConsole(pid):
             # Access denied means this process still holds a console of its
             # own. Dropping it is the only way to attach elsewhere.
@@ -280,6 +289,9 @@ def _write_input(text: str) -> int:
     has returned false, and acting on a number that might be invented is worse
     than treating the write as having done nothing.
     """
+    if sys.platform == "darwin":
+        from . import macos
+        return _records_for(text) if macos.write_input(text) else 0
     handle = kernel32.CreateFileW(
         "CONIN$", _GENERIC_READ | _GENERIC_WRITE, _FILE_SHARE_READ_WRITE,
         None, _OPEN_EXISTING, 0, None)
@@ -295,6 +307,9 @@ def _write_input(text: str) -> int:
 
 def _screen_text() -> str:
     """Whatever the attached console is currently showing, as plain text."""
+    if sys.platform == "darwin":
+        from . import macos
+        return macos.screen_text()
     handle = kernel32.CreateFileW(
         "CONOUT$", _GENERIC_READ | _GENERIC_WRITE, _FILE_SHARE_READ_WRITE,
         None, _OPEN_EXISTING, 0, None)
@@ -392,6 +407,8 @@ def console_window(pid: int) -> int:
     the handle to tell its own window apart from any other that might take the
     foreground, and attaching is the only way to ask for it.
     """
+    if sys.platform != "win32":
+        return 0
     with _attached(pid) as attached:
         return kernel32.GetConsoleWindow() if attached else 0
 

@@ -1,10 +1,12 @@
 # claude_console
 
-Open a visible Claude Code session on Windows and type a prompt into it.
+Open a visible Claude Code session and leave a prompt editable and unsent.
 
-**Windows only.** Not "mostly portable" — the default-terminal handoff, console
-input buffers and `CreateEnvironmentBlock` are the whole substance of this
-module, and it raises on import anywhere else. Nothing in it pretends otherwise.
+Windows uses the default terminal and native console input buffers. The Mac
+prototype uses Terminal.app with a private PTY relay. Both expose the same
+`open_session`/`Session.deliver` interface and stay stdlib-only on Python 3.12+.
+Mac live Terminal/Claude acceptance is still pending; isolated PTY tests prove
+the transport and shared delivery contract, not native product parity.
 
 ```python
 import claude_console
@@ -15,6 +17,39 @@ session.deliver(prompt="FEATURE: make the thing")
 
 That is the entire common case. `open_session` returns as soon as the session
 exists; `deliver` returns immediately and does its waiting on a daemon thread.
+
+## Mac prototype
+
+Install with `uv pip install --python <consumer-venv>/bin/python -e <this-checkout>`.
+Claude must be installed on the account's login-shell PATH. A normal launch
+runs Claude in zsh, carries `name=` with `-n`, and leaves a shell after Claude
+exits. An explicit `launch` keeps its argument list and uses the same typed
+rename fallback as Windows. The environment is rebuilt from the account and
+its login shell; it does not inherit agent color/session variables.
+
+Terminal opens a new session-specific tab/window and may come forward for the
+user's gesture. macOS may ask for permission to control Terminal. If denied,
+the opening error identifies System Settings > Privacy & Security > Automation.
+Delivery uses a private socket and PTY, never global keyboard injection. The
+relay runs outside the Cocoa process and survives a tracker exit/restart.
+Closing its Terminal attachment closes the child session and cleans up.
+
+The shared delivery protocol reads **visible contents of that exact Terminal
+tab**, waits for Claude's prompt and bracketed-paste support, submits setup
+commands in order, and confirms the final paste. It never answers trust or
+permission dialogs. If the person starts typing during delivery, further
+automatic writes stop so retries cannot clear or submit their edits. Prompt
+text containing terminal control characters is refused; the consumer's
+clipboard copy remains available. Failures are reported through `Delivery`
+and the existing journal. No supported API silently succeeds from copying
+text to the clipboard alone.
+
+Before calling this native parity, verify a user-invoked handoff in Terminal:
+first permission grant/denial, cold startup and manual workspace trust,
+name/color, long Unicode paths editable and unsent, terminal resize/close,
+two concurrent sessions, and tracker restart. Do not run live Claude or open
+Terminal as an automated test. The equivalent native Windows gate also remains
+required when changing the shared protocol.
 
 ## Why this is a shared module
 
@@ -199,7 +234,7 @@ because the tempting mistakes are all in this list:
 | `Session.deliver(prompt, commands, on_finish=None)` | Submit each command, then leave the prompt typed and unsent. Background |
 | `Session.deliver_now(prompt, commands)` | The same, on this thread, for a caller about to exit. Returns the `Delivery` |
 | `Session.window()` | The console's `HWND`, or 0. Under Windows Terminal this is the *pseudo*-console window, not the visible one |
-| `Session.pid` / `.host` | The session's pid / the `Popen` behind it — the same process |
+| `Session.pid` / `.host` | Windows session process, or Mac private relay process; `Popen` stays alive with that session |
 | `console_input.Delivery` | What a delivery managed: `commands_submitted`, `commands_total`, `had_prompt`, `prompt_typed`, `seconds`, `.complete` |
 
 **Name a session through `name=`, never by typing `/rename` yourself.** It
@@ -210,7 +245,7 @@ into its command line, so that session falls back to a typed `/rename` which
 `deliver` puts in front of the commands for you. Either way you pass `name=`
 and never build the command line or the slash command yourself.
 
-`launch` defaults to `claude` running inside `powershell.exe -NoExit`, so when
+On Windows `launch` defaults to `claude` running inside `powershell.exe -NoExit`, so when
 Claude exits you are left at a PowerShell prompt in the session's directory
 rather than watching the window and its scrollback disappear. An override
 replaces the whole argv, wrapper included.
@@ -226,7 +261,21 @@ ask for — a window like that still may not activate), `claude_environment`,
 `login_environment`, `safe_line`, `safe_argument`, `cap`, and the
 `console_input`, `environment` and `journal` submodules.
 
+Windows native lower-level APIs remain available on Windows. On Mac
+`Session.window()` returns 0 and `unfocused_startup()` returns `None`; Windows
+ctypes structures are not a Mac native console API.
+
 ## Tests
+
+The OS matrix runs the shared protocol, text, public API, and Windows spawn
+policy contracts on both systems. Only real Win32/PowerShell and Mac PTY/shell
+tests are platform-marked. Mac: `uv venv --python 3.12 .venv`, install this
+package and pytest into it, then `.venv/bin/python -m pytest tests/ -q`.
+`tools/check_consumers.py` recognises both standard venv layouts and reports
+missing checkouts/environments as **skip**. For a paired worktree, pass
+`--consumer task_tracker=<absolute-consumer-path>`. Package tests alone do not
+prove consumer compatibility. The Windows/macOS CI jobs run on both OSes;
+repository administrators must require both checks before merging.
 
 ```powershell
 uv venv --python 3.12 .venv
