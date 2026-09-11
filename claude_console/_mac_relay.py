@@ -74,37 +74,34 @@ def resize(fd, rows, columns):
 def _stop_child(pid):
     if pid is None:
         return
-    try:
-        if os.waitpid(pid, os.WNOHANG)[0]:
-            return
-    except ChildProcessError:
-        return
-    # The child owns its process group. Never search process names or kill
-    # unrelated sessions; reap even when the PTY already reported EOF.
-    try:
-        os.killpg(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    except PermissionError:
-        # Closing the PTY can end the group before this signal reaches it;
-        # macOS reported EPERM here during concurrent-session cleanup. Signal
-        # only our known child directly, then reap it in the same bounded loop.
+    # This is the child's sole reaper. Keep it unreaped until ALL group signals
+    # finish: a dead leader can leave live descendants, and retaining its PID
+    # also prevents that identity being reused for an unrelated process/group.
+    # Never discover targets by process name or signal after waitpid releases it.
+    def signal_owned(signum):
         try:
-            os.kill(pid, signal.SIGTERM)
+            os.killpg(pid, signum)
+        except (ProcessLookupError, PermissionError):
+            # macOS can report EPERM after the PTY has closed its group.
+            pass
+        # Also cover cleanup racing pty.fork's child before it creates its group.
+        try:
+            os.kill(pid, signum)
         except ProcessLookupError:
             pass
+
+    signal_owned(signal.SIGTERM)
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         try:
-            if os.waitpid(pid, os.WNOHANG)[0]:
-                return
-        except ChildProcessError:
-            return
+            os.killpg(pid, 0)
+        except ProcessLookupError:
+            break
+        except PermissionError:
+            # Retain the owned child until the final direct signal below.
+            break
         time.sleep(.02)
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    signal_owned(signal.SIGKILL)
     try:
         os.waitpid(pid, 0)
     except ChildProcessError:

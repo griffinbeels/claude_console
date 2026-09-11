@@ -1,6 +1,7 @@
 """Actual isolated PTYs and fake CLI; Terminal automation is replaced at the UI boundary."""
 import json
 import os
+import signal
 import socket
 import sys
 import time
@@ -13,6 +14,7 @@ from claude_console import console_input, macos
 
 pytestmark = pytest.mark.skipif(sys.platform != "darwin", reason="Native Mac PTY relay")
 FAKE = Path(__file__).with_name("_pty_fixture.py")
+DESCENDANTS = Path(__file__).with_name("_pty_descendant_fixture.py")
 
 
 @pytest.fixture
@@ -48,12 +50,12 @@ def terminal(tmp_path, monkeypatch):
     monkeypatch.setattr(console_input, "paste", lambda pid, text:
                         real_paste(pid, text, timeout=.5, attempts=1))
 
-    def launch(mode="ready", name=""):
+    def launch(mode="ready", name="", fixture=FAKE):
         state = tmp_path / f"state-{len(hosts)}.json"
         project = tmp_path / "project with spaces 日本語"
         project.mkdir(exist_ok=True)
         opened = claude_console.open_session(project,
-                    [sys.executable, str(FAKE), str(state), mode], name=name)
+                    [sys.executable, str(fixture), str(state), mode], name=name)
         hosts.append(opened.host)
         transport = macos._sessions[opened.pid]
         screens[transport.tty] = state
@@ -196,3 +198,38 @@ def test_queued_terminal_input_preempts_an_automatic_write():
         terminal_side.close()
         os.close(reader)
         os.close(master)
+
+
+@pytest.mark.parametrize("mode", ["leader-exits-first", "leader-exits-on-termination"])
+def test_relay_cleanup_stops_descendants_after_the_group_leader_exits(terminal, mode):
+    opened, state = terminal(mode, fixture=DESCENDANTS)
+    descendant = group = None
+    try:
+        deadline = time.monotonic() + 3
+        while not state.exists() and time.monotonic() < deadline:
+            time.sleep(.01)
+        observed = read_state(state)
+        descendant, group = observed["descendant"], observed["group"]
+        if mode == "leader-exits-first":
+            # The direct child has exited before cleanup, not because we closed
+            # the attachment. The descendant keeps the group alive by itself.
+            opened.host.wait(timeout=5)
+        terminal.connections[0].close()
+        opened.host.wait(timeout=5)
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(descendant, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(.01)
+        else:
+            pytest.fail("The relay exited with a live process-group descendant")
+    finally:
+        if descendant is not None:
+            try:
+                # Even the red test must not leave its disposable process up.
+                if os.getpgid(descendant) == group:
+                    os.kill(descendant, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
