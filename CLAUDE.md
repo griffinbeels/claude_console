@@ -1,6 +1,6 @@
 # claude_console — working notes for Claude
 
-One copy of the code that opens a visible Claude Code session on Windows and
+One copy of the code that opens a visible Claude Code session on Windows/Mac and
 types into it. Extracted from task_tracker on 2026-07-26 because every project
 on this machine wants it and none of them should rediscover the Windows
 findings inside it.
@@ -24,9 +24,10 @@ uv pip install --python ".venv\Scripts\python.exe" -e . pytest
   because PowerShell mangles a native command's exit code, so a pass/fail that
   something else reads — a wrap step, a hook — is more honest out of Bash.
   PowerShell 5.1 also has no `&&`/`||` — chain with `;` or `if ($?) { }`.
-- **Windows only, and stated rather than implied.** `ctypes.WinDLL`,
-  console input buffers and `CreateEnvironmentBlock` are the substance here; the
-  package raises on import anywhere else. Nothing pretends to be portable.
+- **Native boundaries are explicit.** Win32 imports run only on Windows.
+  `macos.py` opens Terminal and owns its private connection; `_mac_relay.py`
+  owns the PTY in a separate process, never inside Cocoa. Mac native acceptance
+  is pending; see README. The existing Windows findings remain Windows rules.
 - **Stdlib-only, and that is load-bearing.** It is what lets one editable
   install serve both a project with its own venv and a project that reaches
   whatever `python` is on PATH — here, a bare 3.14 with nothing installed in it.
@@ -100,6 +101,7 @@ are exempt; they never reach a pipe. Pinned by
 | `session.py` | The spawn — `DEFAULT_LAUNCH`, the rebuilt environment, and `unfocused_startup` for the helpers this module does *not* open on a user's behalf |
 | `console_input.py` | Everything about typing into another process's console: bracketed paste, waiting for the prompt box, reading the screen back |
 | `environment.py` | The environment Windows gives a freshly launched process |
+| `macos.py` / `_mac_relay.py` | Mac login environment, Terminal tab identity, private PTY input; shared delivery reads the visible tab |
 | `text.py` | `safe_line`, `safe_argument` and `cap` — making a string safe to *submit as a line* and safe to *interpolate into a launch*, which are two different jobs with two different parsers downstream (invariants 11 and 15) |
 | `journal.py` | The delivery log — where it lives, and that writing it can never break a hand-off |
 | `__main__.py` | The CLI, for consumers that are not Python |

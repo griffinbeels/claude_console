@@ -31,7 +31,8 @@ from claude_console import session
 # A real process, no window on screen. Not CREATE_NEW_CONSOLE — see
 # tests/test_conventions.py, which fails the build on that flag anywhere but
 # session.py.
-NO_WINDOW = subprocess.CREATE_NO_WINDOW
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason="Native PowerShell argv parsing")
 
 # PowerShell loads the user's profile here exactly as a real launch does. It
 # cannot change how PowerShell 5.1 quotes native arguments, but "the launch we

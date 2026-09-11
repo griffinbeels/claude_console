@@ -4,12 +4,24 @@ paths:
   - "claude_console/environment.py"
   - "claude_console/__init__.py"
   - "claude_console/__main__.py"
+  - "claude_console/macos.py"
+  - "claude_console/_mac_relay.py"
   - "tests/test_session.py"
   - "tests/test_launch_argv.py"
   - "tests/test_environment.py"
 ---
 
 # Opening a session — the window, the launch, the environment
+
+The measurements below describe Windows. Mac keeps the same public Session
+and delivery protocol through `macos.py` and a separate `_mac_relay.py`
+interpreter. Never call pty.fork from Cocoa, or replace the private socket with
+global keyboard automation. Terminal's `contents` is the visible tab text;
+`history` includes scrollback and cannot establish current prompt readiness.
+An interactive login shell is required to load `.zshrc` PATH additions; a
+login-only probe missed the installed Claude on the first Mac build.
+Native Mac acceptance remains the checklist in README, separate from fake-CLI
+PTY test results. Existing task authorization governs user-opened windows.
 
 Invariants 1, 2, 3, 4, 5, 6, 12, 14 and 15, and what conhost cost.
 

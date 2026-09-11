@@ -3,6 +3,8 @@ paths:
   - "claude_console/console_input.py"
   - "claude_console/text.py"
   - "claude_console/journal.py"
+  - "claude_console/macos.py"
+  - "claude_console/_mac_relay.py"
   - "tests/test_console_input.py"
   - "tests/test_text.py"
 ---
