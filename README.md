@@ -39,6 +39,8 @@ tab**, waits for Claude's prompt and bracketed-paste support, submits setup
 commands in order, and confirms the final paste. It never answers trust or
 permission dialogs. If the person starts typing during delivery, further
 automatic writes stop so retries cannot clear or submit their edits. Prompt
+regions that contain unknown or wrapped text cannot authorize Enter or clear;
+the consumer receives an incomplete delivery instead of losing that text. Prompt
 text containing terminal control characters is refused; the consumer's
 clipboard copy remains available. Failures are reported through `Delivery`
 and the existing journal. No supported API silently succeeds from copying

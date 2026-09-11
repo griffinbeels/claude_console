@@ -130,6 +130,28 @@ def request(path, message):
             return json.loads(response.readline(1024 * 1024))
 
 
+def _single_line_prompt(screen):
+    """Read an entire simple input region; ambiguous/wrapped content is unsafe.
+
+    The shared protocol recognises an opening substring to confirm a paste.
+    That is insufficient authorization for Enter or Ctrl+U: another person's
+    text could surround it, including on continuation rows below it.
+    """
+    from .console_input import BOX_MARKERS, READY_MARKERS, prompt_box
+    rows = screen.splitlines()
+    boxes = [i for i, row in enumerate(rows) if row.startswith(BOX_MARKERS)]
+    if not boxes:
+        return None
+    for row in rows[boxes[-1] + 1:]:
+        if any(marker in row for marker in READY_MARKERS):
+            return prompt_box(screen)
+        # The supported layouts put a horizontal input separator before the
+        # status footer. Unknown content is not silently discarded as chrome.
+        if row.strip() and not all(char in " ─━╰╯└┘│" for char in row):
+            return None
+    return None
+
+
 @dataclass
 class Transport:
     host: subprocess.Popen
@@ -137,6 +159,7 @@ class Transport:
     tty: str = ""
     last_error: str = ""
     input_generation: int | None = None
+    owned_line: str | None = None
 
     def screen(self):
         text = terminal_contents(self.tty).replace("\r\n", "\n").replace("\r", "\n")
@@ -151,16 +174,33 @@ class Transport:
     def write(self, text):
         # Recheck at the write boundary. In particular, never send a command's
         # Enter to a trust/permission dialog that replaced the prompt.
+        # Capture before reading the screen. A generation captured afterwards
+        # would adopt input typed during that read as our own safe baseline.
+        # Never refresh it on retries: a user's intervention cancels the rest
+        # of this handoff rather than authorizing it again.
+        if self.input_generation is None:
+            self.input_generation = request(self.path, {"status": True})["input_generation"]
         screen = terminal_contents(self.tty).replace("\r\n", "\n").replace("\r", "\n")
         if not prompt_ready(screen):
             return False
-        if self.input_generation is None:
-            from .console_input import prompt_box
-            box = prompt_box(screen)
-            if box and not box.startswith('Try "'):
-                return False  # Text somebody already typed belongs to them.
-            self.input_generation = request(self.path, {"status": True})["input_generation"]
-        return request(self.path, {"write": text, "input_generation": self.input_generation}).get("written") == len(text.encode("utf-8"))
+        from .console_input import CLEAR_LINE, PASTE_START, PASTE_END
+        box = _single_line_prompt(screen)
+        pasted = text[len(PASTE_START):-len(PASTE_END)] if text.startswith(PASTE_START) and text.endswith(PASTE_END) else None
+        if text == "\r":
+            if self.owned_line is None or box != self.owned_line:
+                return False
+        elif text == CLEAR_LINE:
+            if box != "" and (self.owned_line is None or box != self.owned_line):
+                return False
+        elif pasted is not None:
+            if box is None or box and not box.startswith('Try "'):
+                return False
+        elif text != PASTE_END:
+            return False
+        written = request(self.path, {"write": text, "input_generation": self.input_generation}).get("written") == len(text.encode("utf-8"))
+        if written and pasted is not None:
+            self.owned_line = pasted.strip() if "\n" not in pasted and "\r" not in pasted else None
+        return written
 
 
 def spawn_claude(cwd, launch=None, name=""):

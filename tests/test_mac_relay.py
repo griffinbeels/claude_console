@@ -74,7 +74,7 @@ def terminal(tmp_path, monkeypatch):
         connection.close()
     for host in hosts:
         host.wait(timeout=5)
-        assert host.poll() is not None
+        assert host.returncode == 0
     for pid in children:
         with pytest.raises(ProcessLookupError):
             os.kill(pid, 0)
@@ -177,3 +177,22 @@ def test_denied_terminal_permission_reaps_helper_and_removes_private_files(termi
     with pytest.raises(PermissionError, match="Terminal automation denied"):
         terminal()
     assert directories and not any(path.exists() for path in directories)
+
+
+def test_queued_terminal_input_preempts_an_automatic_write():
+    """Input may arrive after select() chose a partial control request."""
+    from claude_console import _mac_relay
+    attached, terminal_side = socket.socketpair()
+    reader, master = os.pipe()
+    manual = b"\x1b[200~My unsent draft\x1b[201~"
+    try:
+        terminal_side.sendall(manual)
+        written, generation = _mac_relay.write_automatic(
+            master, attached, {"write": "\r", "input_generation": 0}, 0)
+        assert written == 0 and generation == 1
+        assert os.read(reader, 1024) == manual
+    finally:
+        attached.close()
+        terminal_side.close()
+        os.close(reader)
+        os.close(master)

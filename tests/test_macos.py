@@ -73,3 +73,75 @@ def test_terminal_carriage_return_rows_are_normalized_before_first_write(monkeyp
                         {"input_generation": 0} if message.get("status") else {"written": len(message["write"].encode())})
     transport = macos.Transport(None, Path("unused"), "/dev/test")
     assert transport.write(payload)
+
+
+def test_input_between_visible_snapshot_and_first_generation_cannot_be_submitted(monkeypatch):
+    """The race reported in review: an empty snapshot must not bless later input."""
+    from contextlib import contextmanager
+    from pathlib import Path
+    from claude_console import macos
+    state = {"prompt": "", "generation": 0, "reads": 0, "submitted": []}
+
+    def contents(tty):
+        state["reads"] += 1
+        captured = f"❯ {state['prompt']}\n? for shortcuts"
+        if state["reads"] == 2:  # After submit's readiness read, during write's safety read.
+            state["prompt"] = "My unsent draft "
+            state["generation"] += 1
+        return captured
+
+    def request(path, message):
+        if message.get("status"):
+            return {"input_generation": state["generation"]}
+        text = message["write"]
+        if message["input_generation"] != state["generation"]:
+            return {"written": 0}
+        if text == "\r":
+            state["submitted"].append(state["prompt"])
+            state["prompt"] = ""
+        elif text == console_input.CLEAR_LINE:
+            state["prompt"] = ""
+        else:
+            state["prompt"] += text[6:-6]
+        return {"written": len(text.encode())}
+
+    @contextmanager
+    def attached(pid):
+        yield True
+
+    monkeypatch.setattr(macos, "terminal_contents", contents)
+    monkeypatch.setattr(macos, "request", request)
+    transport = macos.Transport(None, Path("unused"), "/dev/test")
+    monkeypatch.setattr(console_input, "_attached", attached)
+    monkeypatch.setattr(console_input, "_screen_text", transport.screen)
+    monkeypatch.setattr(console_input, "_write_input", lambda text:
+                        console_input._records_for(text) if transport.write(text) else 0)
+    monkeypatch.setattr(console_input, "ECHO_TIMEOUT", .01)
+    monkeypatch.setattr(console_input, "ECHO_POLL", .001)
+
+    assert not console_input.submit(101, "/color green", attempts=1)
+    assert state["submitted"] == []
+    assert state["prompt"] == "My unsent draft "
+
+
+@pytest.mark.parametrize("action", ["\r", "\x15", "\x1b[200~TASK\x1b[201~"])
+@pytest.mark.parametrize("content", ["My unsent draft /color green",
+                                     "/color green\nMy unsent draft",
+                                     "[Pasted text #1 +2 lines]"])
+def test_automatic_write_requires_ownership_of_the_current_prompt(monkeypatch, action, content):
+    from pathlib import Path
+    from claude_console import macos
+    screen = ["❯ \n? for shortcuts"]
+    writes = []
+    monkeypatch.setattr(macos, "terminal_contents", lambda tty: screen[0])
+    def request(path, message):
+        if message.get("status"):
+            return {"input_generation": 0}
+        writes.append(message["write"])
+        return {"written": len(message["write"].encode())}
+    monkeypatch.setattr(macos, "request", request)
+    transport = macos.Transport(None, Path("unused"), "/dev/test")
+    assert transport.write(console_input.PASTE_START + "/color green" + console_input.PASTE_END)
+    screen[0] = f"❯ {content}\n? for shortcuts"
+    assert not transport.write(action)
+    assert len(writes) == 1

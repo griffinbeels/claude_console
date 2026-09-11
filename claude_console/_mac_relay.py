@@ -40,6 +40,31 @@ def write_all(fd, data):
         view = view[count:]
 
 
+def write_automatic(master, attached, message, input_generation):
+    """Refuse a control write if raw terminal input arrived while it was read."""
+    if select.select([attached], [], [], 0)[0]:
+        incoming = attached.recv(65536)
+        if not incoming:
+            raise EOFError("terminal closed")
+        input_generation += 1
+        write_all(master, incoming)
+    if message.get("input_generation") != input_generation:
+        return 0, input_generation
+    text = message.get("write")
+    if not isinstance(text, str):
+        return 0, input_generation
+    # Only explicit control keys and a complete paste enter this path.
+    # An embedded paste terminator cannot escape into shell/command input.
+    content = text[6:-6] if text.startswith("\x1b[200~") and text.endswith("\x1b[201~") else None
+    safe = (text in ("\r", "\x15", "\x1b[201~") or
+            content is not None and all(ord(c) >= 32 or c in "\n\t" for c in content))
+    if not safe:
+        return 0, input_generation
+    encoded = text.encode("utf-8")
+    write_all(master, encoded)
+    return len(encoded), input_generation
+
+
 def resize(fd, rows, columns):
     import termios
     termios.tcsetwinsize(fd, (max(1, min(int(rows), 1000)),
@@ -49,12 +74,25 @@ def resize(fd, rows, columns):
 def _stop_child(pid):
     if pid is None:
         return
+    try:
+        if os.waitpid(pid, os.WNOHANG)[0]:
+            return
+    except ChildProcessError:
+        return
     # The child owns its process group. Never search process names or kill
     # unrelated sessions; reap even when the PTY already reported EOF.
     try:
         os.killpg(pid, signal.SIGTERM)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        # Closing the PTY can end the group before this signal reaches it;
+        # macOS reported EPERM here during concurrent-session cleanup. Signal
+        # only our known child directly, then reap it in the same bounded loop.
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
     deadline = time.monotonic() + 2
     while time.monotonic() < deadline:
         try:
@@ -122,19 +160,9 @@ def serve(config_path):
                         response = {"written": 0}
                         if "size" in message and master is not None:
                             resize(master, *message["size"])
-                        elif ("write" in message and master is not None and bracketed
-                              and message.get("input_generation", input_generation) == input_generation):
-                            text = message["write"]
-                            # Only our explicit control keys and a complete paste
-                            # may enter the PTY. Embedded paste terminators and
-                            # other terminal controls are rejected, never executed.
-                            content = text[6:-6] if text.startswith("\x1b[200~") and text.endswith("\x1b[201~") else None
-                            safe = (text in ("\r", "\x15", "\x1b[201~") or
-                                    content is not None and all(ord(c) >= 32 or c in "\n\t" for c in content))
-                            if safe:
-                                encoded = text.encode("utf-8")
-                                write_all(master, encoded)
-                                response["written"] = len(encoded)
+                        elif "write" in message and master is not None and bracketed:
+                            response["written"], input_generation = write_automatic(
+                                master, attached, message, input_generation)
                         elif message.get("status"):
                             response = {"attached": attached is not None,
                                         "bracketed": bracketed, "child": child,
@@ -174,13 +202,15 @@ def serve(config_path):
         listener.close()
         if master is not None:
             os.close(master)
-        _stop_child(child)
-        path.unlink(missing_ok=True)
-        config_path.unlink(missing_ok=True)
         try:
-            config_path.parent.rmdir()
-        except OSError:
-            pass
+            _stop_child(child)
+        finally:
+            path.unlink(missing_ok=True)
+            config_path.unlink(missing_ok=True)
+            try:
+                config_path.parent.rmdir()
+            except OSError:
+                pass
 
 
 def attach(path):
