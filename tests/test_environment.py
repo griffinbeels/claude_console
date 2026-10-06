@@ -118,13 +118,16 @@ def test_the_session_is_not_told_to_force_transcript_persistence():
         session.claude_environment())
 
 
-def test_spawn_hands_the_rebuilt_environment_to_the_process(monkeypatch):
+def test_spawn_filters_rebuilt_environment_before_process_creation(monkeypatch):
+    # The rebuild is covered above. Never capture the machine's login secrets
+    # in this process-boundary test, or require an installed helper to test it.
     captured = {}
-    monkeypatch.setenv("SPAWNER_ONLY_VAR", "set by the app doing the spawning")
+    monkeypatch.setattr(session, "claude_environment", lambda: {
+        "USERPROFILE": "C:/synthetic-user", "GH_TOKEN": "fixture-only"})
     monkeypatch.setattr(subprocess, "Popen",
                         lambda args, **kwargs: captured.update(kwargs))
 
-    session.spawn_claude(Path("C:/repos/x"))
+    session.spawn_claude(Path("C:/repos/x"),
+                        environment_filter=lambda values: {"USERPROFILE": values["USERPROFILE"]})
 
-    assert "SPAWNER_ONLY_VAR" not in upper_keys(captured["env"])
-    assert upper_keys(captured["env"])["USERPROFILE"]
+    assert captured["env"] == {"USERPROFILE": "C:/synthetic-user"}
