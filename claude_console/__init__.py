@@ -28,6 +28,8 @@ showing, spawning something that is not Claude — reach past this into `session
 and `console_input`, both of which are public.
 """
 
+SECURE_ENVIRONMENT = True
+
 import subprocess
 import threading
 from dataclasses import dataclass
@@ -137,7 +139,7 @@ class Session:
 
 
 def open_session(cwd: Path | str, launch: list[str] | None = None,
-                 name: str = "") -> Session:
+                 name: str = "", *, environment_filter=None) -> Session:
     """Open a visible Claude session in `cwd`, and never take the keyboard.
 
     `launch` overrides the argv, which defaults to `claude` running inside
@@ -165,6 +167,7 @@ def open_session(cwd: Path | str, launch: list[str] | None = None,
     failed here first time, against the focus watchdog this call used to start,
     and two tests caught it.
     """
-    host = _session.spawn_claude(Path(cwd), launch, name=name)
+    kwargs = {} if environment_filter is None else {"environment_filter": environment_filter}
+    host = _session.spawn_claude(Path(cwd), launch, name=name, **kwargs)
     return Session(pid=_session.session_pid(host), host=host,
                    pending_name=_session.display_name(name) if launch else "")

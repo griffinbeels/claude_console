@@ -10,6 +10,7 @@ which does the attaching.
 """
 
 import subprocess
+import importlib.util
 from pathlib import Path
 
 from . import environment
@@ -158,8 +159,20 @@ def claude_environment() -> dict[str, str]:
     return environment.login_environment()
 
 
+def _credential_filter(values):
+    """Require the fixed trusted credential helper before a process is created."""
+    path = Path.home() / ".claude/harness/harness/credential_safety.py"
+    try:
+        spec = importlib.util.spec_from_file_location("console_credential_safety", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.sanitize_environment(values)
+    except Exception:
+        raise ValueError("Credential protection is unavailable; session was not launched.") from None
+
+
 def spawn_claude(cwd: Path, launch: list[str] | None = None,
-                 name: str = "") -> subprocess.Popen:
+                 name: str = "", *, environment_filter=None) -> subprocess.Popen:
     """Start a Claude session in `cwd`, in a new console.
 
     `CREATE_NEW_CONSOLE` from a console-less parent is what reaches Windows'
@@ -175,11 +188,17 @@ def spawn_claude(cwd: Path, launch: list[str] | None = None,
     Returns the session's own process — the pid to type into. Callers should
     still prefer `claude_console.open_session`, which is the composed call.
     """
+    filter_values = _credential_filter if environment_filter is None else environment_filter
+    if not callable(filter_values):
+        raise ValueError("environment_filter must be callable")
+    values = filter_values(claude_environment())
+    if not isinstance(values, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in values.items()):
+        raise ValueError("environment_filter must return a string mapping")
     return subprocess.Popen(
         launch or default_launch(name),
         cwd=Path(cwd),
         creationflags=NEW_CONSOLE,
-        env=claude_environment(),
+        env=values,
     )
 
 

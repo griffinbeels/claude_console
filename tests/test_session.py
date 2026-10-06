@@ -284,3 +284,37 @@ def test_a_caller_that_brought_its_own_argv_gets_the_typed_rename_instead(monkey
 
     assert opened.pending_name == "GAP0"
     assert typed["commands"] == ["/rename GAP0", "/color green"]
+
+
+@pytest.fixture(autouse=True)
+def isolate_spawn_environment(monkeypatch):
+    # Existing spawn tests must never load the machine's actual login secrets.
+    monkeypatch.setattr(session, "claude_environment", lambda: {"PATH": "synthetic-path"})
+    monkeypatch.setattr(session, "_credential_filter", lambda values: dict(values))
+
+
+def test_explicit_environment_filter_applies_before_process_creation(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(session, "claude_environment", lambda: {"PATH": "synthetic-path", "CANARY_SECRET": "synthetic-only"})
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: captured.update(kwargs) or FakeSession())
+    claude_console.open_session(Path("C:/repos/test"), environment_filter=lambda values: {"PATH": values["PATH"]})
+    assert captured["env"] == {"PATH": "synthetic-path"}
+
+
+def test_failed_environment_filter_never_creates_process(monkeypatch):
+    spawned = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: spawned.append(True))
+    def unavailable(values):
+        raise ValueError("Credential protection unavailable")
+    with pytest.raises(ValueError, match="unavailable"):
+        claude_console.open_session(Path("C:/repos/test"), environment_filter=unavailable)
+    assert not spawned
+
+
+@pytest.mark.parametrize("result", [None, {"PATH": 4}, ["PATH"]])
+def test_invalid_environment_filter_result_never_creates_process(monkeypatch, result):
+    spawned = []
+    monkeypatch.setattr(subprocess, "Popen", lambda *args, **kwargs: spawned.append(True))
+    with pytest.raises(ValueError, match="string mapping"):
+        session.spawn_claude(Path("C:/repos/test"), environment_filter=lambda values: result)
+    assert not spawned

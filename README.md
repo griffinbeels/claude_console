@@ -247,3 +247,16 @@ The focus behaviour is pinned by
 matters), plus `test_the_session_window_is_allowed_to_come_to_the_front` and
 `test_a_helper_the_tool_spawns_for_itself_still_gets_no_focus` — the two halves
 of "focus is opt-in", asserted against each other so neither can drift.
+
+
+## Credential-safe sessions
+
+Session creation filters the rebuilt login environment through the fixed shared
+harness credential helper before opening a process. Missing protection raises
+an error without launching. Consumers can provide a keyword-only
+`environment_filter` callable; it must return a string mapping and should remove
+credential variables without reading their values. This seam is checked before
+process creation. The library remains standard-library-only.
+
+`SECURE_ENVIRONMENT` reports this API contract, not hook trust or native log
+sanitization. Install the shared credential helper before updating consumers.
