@@ -1,7 +1,7 @@
 [project]
 name = "claude-console"
 version = "0.1.0"
-description = "Open a visible Claude Code session on Windows and type into it, without taking focus."
+description = "Open a visible Claude Code session and leave an editable, unsent prompt."
 requires-python = ">=3.12"
 # Deliberately none. Everything here is ctypes and stdlib, which is what lets
 # one copy serve both a project with its own venv and a project that shells out

@@ -5,6 +5,12 @@ import pytest
 from claude_console import session
 
 
+@pytest.fixture(autouse=True)
+def force_synthetic_windows_boundary(monkeypatch):
+    """Exercise the shared fixed-helper contract without invoking native macOS."""
+    monkeypatch.setattr(session, "_PLATFORM", "win32")
+
+
 def test_missing_default_helper_prevents_process_creation(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, 'home', lambda: tmp_path)
     monkeypatch.setattr(session, 'claude_environment', lambda: {'PATH': 'synthetic'})

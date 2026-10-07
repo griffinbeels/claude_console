@@ -21,11 +21,13 @@ denylist nobody remembered to update.
 
 import ctypes
 import os
+import sys
 from ctypes import wintypes
 
-userenv = ctypes.WinDLL("userenv", use_last_error=True)
-advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+if sys.platform == "win32":
+    userenv = ctypes.WinDLL("userenv", use_last_error=True)
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 TOKEN_QUERY = 0x0008
 
@@ -36,12 +38,13 @@ IDENTITY_VARS = ("USERNAME", "USERDOMAIN")
 
 # Without these the pseudo-handle comes back as a 32-bit int and the 64-bit
 # callee reads garbage in the high half, failing with ERROR_INVALID_HANDLE.
-kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-advapi32.OpenProcessToken.argtypes = [
-    wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
-userenv.CreateEnvironmentBlock.argtypes = [
-    ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL]
-userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
+if sys.platform == "win32":
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+    userenv.CreateEnvironmentBlock.argtypes = [
+        ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL]
+    userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
 
 
 def _parse_block(address: int) -> dict[str, str]:
@@ -77,6 +80,11 @@ def login_environment() -> dict[str, str]:
     environment and handing over a session that looks subtly wrong with
     nothing to say why.
     """
+    if sys.platform == "darwin":
+        from .macos import login_environment as mac_environment
+        return mac_environment()
+    if sys.platform != "win32":
+        raise OSError(f"Claude console does not support {sys.platform}")
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(),
                                      TOKEN_QUERY, ctypes.byref(token)):

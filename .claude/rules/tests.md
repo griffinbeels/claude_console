@@ -9,6 +9,13 @@ paths:
 
 ## Tests
 
+- On Mac, `test_mac_relay.py` uses actual private PTYs and a fake CLI with
+  independently recorded input state. Its Terminal UI boundary is replaced.
+  `conftest.py` blocks Terminal automation and substitutes temporary account
+  profiles; no suite/probe may open Terminal or real Claude. Win32/PowerShell
+  tests have narrow OS marks; shared delivery/API/text contracts run on both.
+  A simulated UI receipt is not native Terminal/Claude acceptance.
+
 - **No test may put anything on screen.** The suite runs while someone is at the
   keyboard. Two test files spawn a real process, and both are windowless
   (`CREATE_NO_WINDOW`, which is still a *real* console: `AttachConsole`,
