@@ -7,12 +7,25 @@ enforced rather than trusted.
 """
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 
 import claude_console
 from claude_console import console_input, session
+
+
+@pytest.fixture(autouse=True)
+def windows_spawn_contract(monkeypatch):
+    """Exercise Windows argv/spawn policy on both OSes without native calls.
+
+    Public Session composition remains shared; Mac native policy has its own
+    tests. Only the STARTUPINFO assertion below needs an actual Windows runtime.
+    """
+    monkeypatch.setattr(session, "_PLATFORM", "win32")
+    monkeypatch.setattr(session, "DEFAULT_LAUNCH", session.WINDOWS_DEFAULT_LAUNCH)
+    monkeypatch.setattr(session, "claude_environment", lambda: {})
 
 
 class FakeSession:
@@ -92,6 +105,7 @@ def test_the_session_window_is_allowed_to_come_to_the_front(monkeypatch):
     assert captured.get("startupinfo") is None
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Native Windows STARTUPINFO")
 def test_a_helper_the_tool_spawns_for_itself_still_gets_no_focus():
     """The other half of the split, and the reason this helper outlived its use.
 

@@ -11,6 +11,25 @@ remember it, and remembering is what fails.
 """
 
 import pytest
+import sys
+
+
+@pytest.fixture(autouse=True)
+def shell_profiles_are_fixtures_on_mac(tmp_path, monkeypatch):
+    if sys.platform == "darwin":
+        import pwd
+        from types import SimpleNamespace
+        account = SimpleNamespace(pw_dir=str(tmp_path), pw_name="console-test",
+                                  pw_shell="/bin/zsh")
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: account)
+
+
+@pytest.fixture(autouse=True)
+def no_test_opens_or_controls_terminal(monkeypatch):
+    from claude_console import macos
+    def forbidden(*args, **kwargs):
+        pytest.fail("Tests must replace Terminal automation; no window or user tab may be touched")
+    monkeypatch.setattr(macos, "_applescript", forbidden)
 
 
 @pytest.fixture(autouse=True)

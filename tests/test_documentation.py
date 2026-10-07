@@ -78,7 +78,11 @@ def _sibling_projects() -> set[str]:
         directory.name
         for directory in neighbours
         if directory.is_dir()
-        and (directory / ".git").exists()
+        and directory.resolve() != REPO.resolve()
+        # A worktree folder is named for its task, not its project. Treating
+        # a sibling worktree named "launcher" as a secret project flags every
+        # legitimate reference to launcher.py. Discover primary repos here.
+        and (directory / ".git").is_dir()
         and directory.name not in NAMEABLE
         and len(directory.name) >= 4
     }

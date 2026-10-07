@@ -4,12 +4,24 @@ paths:
   - "claude_console/environment.py"
   - "claude_console/__init__.py"
   - "claude_console/__main__.py"
+  - "claude_console/macos.py"
+  - "claude_console/_mac_relay.py"
   - "tests/test_session.py"
   - "tests/test_launch_argv.py"
   - "tests/test_environment.py"
 ---
 
 # Opening a session — the window, the launch, the environment
+
+The measurements below describe Windows. Mac keeps the same public Session
+and delivery protocol through `macos.py` and a separate `_mac_relay.py`
+interpreter. Never call pty.fork from Cocoa, or replace the private socket with
+global keyboard automation. Terminal's `contents` is the visible tab text;
+`history` includes scrollback and cannot establish current prompt readiness.
+An interactive login shell is required to load `.zshrc` PATH additions; a
+login-only probe missed the installed Claude on the first Mac build.
+Native Mac acceptance remains the checklist in README, separate from fake-CLI
+PTY test results. Existing task authorization governs user-opened windows.
 
 Invariants 1, 2, 3, 4, 5, 6, 12, 14 and 15, and what conhost cost.
 
@@ -94,7 +106,7 @@ Invariants 1, 2, 3, 4, 5, 6, 12, 14 and 15, and what conhost cost.
    its own scrollback away — and leaves a window behind until it is closed,
    which is the one thing about this change that is a cost rather than a gain.
 
-6. **A spawned session's environment is rebuilt, never filtered.** `Popen`
+6. **A spawned session starts from a rebuilt account environment.** `Popen`
    inherits the spawning process's environment, and an app that spawns Claude
    sessions is usually itself started *from* a Claude session — which sets a
    batch of variables for its children. Inheriting them made the spawned session
@@ -105,7 +117,10 @@ Invariants 1, 2, 3, 4, 5, 6, 12, 14 and 15, and what conhost cost.
    `environment.login_environment()` calls Win32 `CreateEnvironmentBlock`
    instead. **Do not add a var to a strip-list** — the list belongs to upstream
    and grows; rebuilding makes tomorrow's addition absent by construction.
-   Nothing is added back on top either.
+   Nothing is added back on top either. The trusted credential guard then
+   excludes credential-bearing variables before either Windows or Mac launch.
+   Mac also uses that filtered mapping for the saved relay configuration and
+   relay process; verification uses synthetic mappings, never account secrets.
 
 12. **Resolve through the module at call time, never through an imported name.**
     `from .session import session_pid` binds the function *object* into the

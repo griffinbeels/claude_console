@@ -6,7 +6,10 @@ import pytest
 
 from claude_console import console_input
 
-import _console_probe
+if sys.platform == "win32":
+    import _console_probe
+
+windows_native = pytest.mark.skipif(sys.platform != "win32", reason="Windows native console")
 
 PROBE = str(Path(__file__).with_name("_console_probe.py"))
 
@@ -34,6 +37,7 @@ def no_test_reaches_a_real_console(monkeypatch):
     monkeypatch.setattr(console_input, "POLL_SECONDS", 0)
 
 
+@windows_native
 def test_the_probe_console_never_reaches_the_screen():
     # The suite runs constantly while someone else is using the machine, so the
     # one test that opens a real console must open a windowless one. Under a
@@ -121,6 +125,7 @@ def test_nothing_is_typed_for_empty_text():
     assert console_input.paste(0, "", timeout=5) is False
 
 
+@windows_native
 def test_text_is_typed_into_another_process_console():
     """The whole mechanism, against a real console this process does not own.
 
@@ -697,11 +702,13 @@ def test_a_failed_delivery_records_the_screen_that_explains_it(
     assert "| > " in written
 
 
-def test_logging_that_fails_never_takes_the_hand_off_with_it(monkeypatch):
+def test_logging_that_fails_never_takes_the_hand_off_with_it(monkeypatch, tmp_path):
     # A log that can break a delivery is worse than no log. `deliver` rather
     # than `paste`, because a paste that lands first time has nothing to say
     # and would not exercise the writer at all.
-    monkeypatch.setenv("CLAUDE_CONSOLE_LOG", "Z:/no/such/drive/delivery.log")
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("file blocks directory creation", encoding="utf-8")
+    monkeypatch.setenv("CLAUDE_CONSOLE_LOG", str(blocker / "delivery.log"))
     live_session(monkeypatch)
 
     assert console_input.deliver(7, [], "BUG: body").prompt_typed is True

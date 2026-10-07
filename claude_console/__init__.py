@@ -1,8 +1,8 @@
 """Open a visible Claude Code session and type into it.
 
-Windows only. Everything here depends on Win32 — the default-terminal handoff,
-console input buffers, `CreateEnvironmentBlock` — and the module raises on
-import anywhere else rather than pretending to be portable.
+Windows uses native console input buffers; the Mac prototype uses Terminal.app
+and a separate PTY relay. Native imports are selected by platform. The shared
+delivery protocol confirms the visible prompt and leaves task text unsent.
 
 The whole surface is two calls::
 
@@ -12,14 +12,14 @@ The whole surface is two calls::
     session.deliver(prompt="FEATURE: make the thing")
 
 `open_session` spawns the session and hands back the pid to type into. The
-window it opens belongs to whatever this machine's default terminal is — here,
+Windows window it opens belongs to whatever this machine's default terminal is — here,
 Windows Terminal — and it is allowed to come to the front, because opening a
 session is a human gesture and one earns the focus it takes. What must open
 nothing at all is a *test*, and that is enforced in `tests/test_conventions.py`.
 
 `deliver` is asynchronous. It waits for the session's prompt box to appear
 before typing (which can take tens of seconds on a cold start), so it runs on
-a daemon thread and reports nothing back. Every failure on that path is quiet
+a daemon thread and reports its Delivery through an optional callback. Failure is quiet
 by design: the caller is expected to have put the same text somewhere the user
 can reach it, and a timeout then costs one Ctrl+V rather than the text itself.
 
@@ -75,10 +75,13 @@ __all__ = [
 class Session:
     """A Claude session running in a console this process can type into.
 
-    `pid` is the session itself, which is now the spawned process rather than a
+    On Windows `pid` is the session itself, which is the spawned process rather than a
     child of it — see `session.session_pid` for why that changed. `host` is the
     `Popen` behind it, kept under that name because a caller may want to wait
     on it, and renaming it would break a consumer for no gain.
+
+    On Mac the pid/host identify its private relay, which lives until the
+    terminal attachment closes. `window()` returns 0 because there is no HWND.
 
     `pending_name` is a name the launch could not carry, and it is empty for
     every session opened the normal way — see `open_session`.
@@ -143,7 +146,7 @@ def open_session(cwd: Path | str, launch: list[str] | None = None,
     """Open a visible Claude session in `cwd`, and never take the keyboard.
 
     `launch` overrides the argv, which defaults to `claude` running inside
-    PowerShell. Nothing is prepended to it: the console goes to whatever this
+    PowerShell on Windows or zsh on Mac. On Windows the console goes to whatever this
     machine's default terminal is, which is the point rather than a compromise
     — see `session.DEFAULT_LAUNCH` for the measurement behind that.
 

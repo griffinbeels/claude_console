@@ -8,11 +8,16 @@ would only assert that the mock was called.
 import ctypes
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from claude_console import environment, session
+import pytest
+
+windows_native = pytest.mark.skipif(sys.platform != "win32", reason="Native Windows environment")
 
 
+@windows_native
 def test_the_block_is_walked_by_utf16_code_units_not_characters():
     """A variable holding an emoji must not desync everything after it.
 
@@ -46,6 +51,7 @@ def test_a_variable_set_only_in_this_process_does_not_reach_the_session(monkeypa
     assert "SPAWNER_ONLY_VAR" not in upper_keys(environment.login_environment())
 
 
+@windows_native
 def test_the_baseline_still_carries_the_real_user_environment():
     env = upper_keys(environment.login_environment())
 
@@ -55,6 +61,7 @@ def test_the_baseline_still_carries_the_real_user_environment():
         assert env.get(name), f"{name} missing from the rebuilt environment"
 
 
+@windows_native
 def test_identity_vars_windows_omits_from_the_block_are_restored():
     # CreateEnvironmentBlock leaves USERNAME/USERDOMAIN out of the block it
     # builds from a process token, but a real console has them.
@@ -65,6 +72,7 @@ def test_identity_vars_windows_omits_from_the_block_are_restored():
             assert env.get(name.upper()) == os.environ[name]
 
 
+@windows_native
 def test_the_launch_executable_is_still_resolvable_on_the_rebuilt_path():
     # The one way this approach could fail outright: rebuilding PATH from the
     # registry drops wherever `claude` lives, and opening a session stops
@@ -99,15 +107,21 @@ CHILD_PROCESS_VARS = [
 
 
 def test_no_variable_claude_injects_into_child_processes_is_passed_on(monkeypatch):
+    def controls(values):
+        # Select these non-secret names before reading any values. A runner or
+        # user may legitimately set one in the account's login environment.
+        names = {name.upper(): name for name in values}
+        return {name: values[names[name]] for name, _ in CHILD_PROCESS_VARS if name in names}
+
+    baseline = controls(environment.login_environment())
     for name, value in CHILD_PROCESS_VARS:
-        monkeypatch.setenv(name, value)
+        monkeypatch.setenv(name, "spawner-only-" + value)
 
-    env = upper_keys(session.claude_environment())
-
-    leaked = [name for name, _ in CHILD_PROCESS_VARS if name in env]
-    assert not leaked, (
-        "the spawned session must be indistinguishable from one started by "
-        "hand in a fresh terminal; these were inherited instead: " + ", ".join(leaked))
+    rebuilt = controls(session.claude_environment())
+    changed = [name for name, _ in CHILD_PROCESS_VARS
+               if rebuilt.get(name) != baseline.get(name)]
+    assert not changed, (
+        "spawner-only controls changed the fresh account environment: " + ", ".join(changed))
 
 
 def test_the_session_is_not_told_to_force_transcript_persistence():
@@ -118,6 +132,7 @@ def test_the_session_is_not_told_to_force_transcript_persistence():
         session.claude_environment())
 
 
+@windows_native
 def test_spawn_filters_rebuilt_environment_before_process_creation(monkeypatch):
     # The rebuild is covered above. Never capture the machine's login secrets
     # in this process-boundary test, or require an installed helper to test it.

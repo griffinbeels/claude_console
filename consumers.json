@@ -21,6 +21,7 @@
     {
       "name": "task_tracker",
       "path": "../task_tracker",
+      "alternate_paths": ["../task-tracker"],
       "python": ".venv/Scripts/python.exe",
       "verify": ["-m", "pytest", "tests/", "-q"]
     }
