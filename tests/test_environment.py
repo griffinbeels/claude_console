@@ -107,15 +107,21 @@ CHILD_PROCESS_VARS = [
 
 
 def test_no_variable_claude_injects_into_child_processes_is_passed_on(monkeypatch):
+    def controls(values):
+        # Select these non-secret names before reading any values. A runner or
+        # user may legitimately set one in the account's login environment.
+        names = {name.upper(): name for name in values}
+        return {name: values[names[name]] for name, _ in CHILD_PROCESS_VARS if name in names}
+
+    baseline = controls(environment.login_environment())
     for name, value in CHILD_PROCESS_VARS:
-        monkeypatch.setenv(name, value)
+        monkeypatch.setenv(name, "spawner-only-" + value)
 
-    env = upper_keys(session.claude_environment())
-
-    leaked = [name for name, _ in CHILD_PROCESS_VARS if name in env]
-    assert not leaked, (
-        "the spawned session must be indistinguishable from one started by "
-        "hand in a fresh terminal; these were inherited instead: " + ", ".join(leaked))
+    rebuilt = controls(session.claude_environment())
+    changed = [name for name, _ in CHILD_PROCESS_VARS
+               if rebuilt.get(name) != baseline.get(name)]
+    assert not changed, (
+        "spawner-only controls changed the fresh account environment: " + ", ".join(changed))
 
 
 def test_the_session_is_not_told_to_force_transcript_persistence():
