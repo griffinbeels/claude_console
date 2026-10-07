@@ -54,7 +54,19 @@ def test_no_tracked_file_carries_a_home_directory_path():
 
 # Repositories this one may legitimately name: its own, and its declared
 # consumers, which consumers.json publishes anyway.
-NAMEABLE = {"claude-console", "claude_console", "task_tracker", "task-tracker"}
+# The installed credential guard is a declared shared dependency.
+NAMEABLE = {"claude-console", "claude_console", "task_tracker", "task-tracker", "harness"}
+
+
+def _primary_checkout() -> Path:
+    result = subprocess.run(
+        ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cwd=REPO, capture_output=True, text=True, encoding="utf-8",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), timeout=10)
+    if result.returncode:
+        return REPO
+    common = Path(result.stdout.strip())
+    return (common if common.is_absolute() else REPO / common).resolve().parent
 
 
 def _sibling_projects() -> set[str]:
@@ -71,7 +83,7 @@ def _sibling_projects() -> set[str]:
     a folder called docs appeared next door.
     """
     try:
-        neighbours = list(REPO.parent.iterdir())
+        neighbours = list(_primary_checkout().parent.iterdir())
     except OSError:
         return set()
     return {
@@ -86,6 +98,19 @@ def _sibling_projects() -> set[str]:
         and directory.name not in NAMEABLE
         and len(directory.name) >= 4
     }
+
+
+def test_privacy_projection_finds_primary_neighbours_from_nested_worktrees(tmp_path, monkeypatch):
+    primary = tmp_path / "claude-console"
+    (primary / ".git").mkdir(parents=True)
+    (tmp_path / "private-project" / ".git").mkdir(parents=True)
+    (tmp_path / "harness" / ".git").mkdir(parents=True)
+    worktree = primary / ".codex" / "feature"
+    worktree.mkdir(parents=True)
+    module = __import__(__name__, fromlist=["REPO"])
+    monkeypatch.setattr(module, "REPO", worktree)
+    monkeypatch.setattr(module, "_primary_checkout", lambda: primary)
+    assert _sibling_projects() == {"private-project"}
 
 
 def test_no_tracked_file_names_another_project_on_this_machine():
